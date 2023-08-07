@@ -40,9 +40,14 @@
 #include <ctype.h>
 #include <time.h>
 #include <fnmatch.h>
-#include <regex.h>
 #include <sys/stat.h>
 #include <locale.h>
+
+// silence warnings in gnulib code
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wvla"
+#include <regex.h>
+#pragma GCC diagnostic pop
 
 #ifdef _WIN32
 #include <windows.h> // GetFileAttributes()
@@ -1178,13 +1183,13 @@ static void convert_links(void)
 					// conversion takes place, write to disk
 					if (!fpout) {
 						if (config.backup_converted) {
-							char dstfile[strlen(conversion->filename) + 5 + 1];
-
-							wget_snprintf(dstfile, sizeof(dstfile), "%s.orig", conversion->filename);
+							char *dstfile = wget_aprintf("%s.orig", conversion->filename);
 
 							if (rename(conversion->filename, dstfile) == -1) {
 								wget_error_printf(_("Failed to rename %s to %s (%d)"), conversion->filename, dstfile, errno);
 							}
+
+							xfree(dstfile);
 						}
 						if (!(fpout = fopen(conversion->filename, "wb")))
 							wget_error_printf(_("Failed to write open %s (%d)"), conversion->filename, errno);
@@ -1250,6 +1255,16 @@ static void print_progress_report(long long start_time)
 				rs_type, stats.nredirects, queue_size(), stats.nerrors
 			);
 	}
+}
+
+static bool is_tty(void) {
+#ifdef _WIN32 // If the windows console doesn't support VT codes treat it as if it wasn't a tty.
+	DWORD mode;
+	if (! GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode) || (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0)
+		return false;
+#endif
+
+	return isatty(STDOUT_FILENO) == 1;
 }
 
 int main(int argc, const char **argv)
@@ -1374,7 +1389,7 @@ int main(int argc, const char **argv)
 		}
 	}
 
-	if (config.progress != PROGRESS_TYPE_NONE && !isatty(STDOUT_FILENO) && !config.force_progress) {
+	if (config.progress != PROGRESS_TYPE_NONE && !is_tty() && !config.force_progress) {
 		config.progress = PROGRESS_TYPE_NONE;
 	}
 
@@ -1402,7 +1417,7 @@ int main(int argc, const char **argv)
 			downloaders[nthreads].id = nthreads;
 
 			// The actual number of nthreads is updated in the loop iteration
-			// counter ater the iteration. So we add one already here to
+			// counter after the iteration. So we add one already here to
 			// account for it. The second extra slot is for the stats data that
 			// is printed on the last line.
 			if (config.progress == PROGRESS_TYPE_BAR)
@@ -3369,32 +3384,37 @@ static int WGET_GCC_NONNULL((1)) prepare_file(wget_http_response *resp, const ch
 		flag = O_EXCL;
 
 		if (config.backups) {
-			char src[fname_length + 1], dst[fname_length + 1];
+			size_t src_size = fname_length + 1, dst_size = fname_length + 1;
+			char *src = wget_malloc(src_size), *dst = wget_malloc(dst_size);
 
 			for (int it = config.backups; it > 0; it--) {
 				if (it > 1)
-					wget_snprintf(src, sizeof(src), "%s.%d", fname, it - 1);
+					wget_snprintf(src, src_size, "%s.%d", fname, it - 1);
 				else
-					wget_strscpy(src, fname, sizeof(src));
-				wget_snprintf(dst, sizeof(dst), "%s.%d", fname, it);
+					wget_strscpy(src, fname, src_size);
+				wget_snprintf(dst, dst_size, "%s.%d", fname, it);
 
 				if (rename(src, dst) == -1 && errno != ENOENT)
 					error_printf(_("Failed to rename %s to %s (errno=%d)\n"), src, dst, errno);
 			}
+
+			xfree(src);
+			xfree(dst);
 		}
 	}
 
 	// create the complete directory path
 	mkdir_path((char *) fname, true);
 
-	char unique[fname_length + 1];
+	size_t unique_size = fname_length + 1;
+	char *unique = wget_malloc(unique_size);
 	*unique = 0;
 
 	// Load partial content
 	if (partial_content) {
 		long long size = get_file_size(unique[0] ? unique : fname);
 		if (size >= 0) {
-			fd = open_unique(fname, O_RDONLY | O_BINARY, 0, multiple, unique, sizeof(unique));
+			fd = open_unique(fname, O_RDONLY | O_BINARY, 0, multiple, unique, unique_size);
 			if (fd >= 0) {
 				size_t rc;
 				if ((unsigned long long) size > max_partial_content)
@@ -3419,16 +3439,18 @@ static int WGET_GCC_NONNULL((1)) prepare_file(wget_http_response *resp, const ch
 		if (unlink(fname) < 0 && errno != ENOENT) {
 			error_printf(_("Failed to unlink '%s' (errno=%d)\n"), fname, errno);
 			set_exit_status(EXIT_STATUS_IO);
+			xfree(unique);
 			return -1;
 		}
 	}
 
 	fd = open_unique(fname, O_WRONLY | flag | O_CREAT | O_NONBLOCK | O_BINARY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
-		multiple, unique, sizeof(unique));
+		multiple, unique, unique_size);
 	// debug_printf("1 fd=%d flag=%02x (%02x %02x %02x) errno=%d %s\n",fd,flag,O_EXCL,O_TRUNC,O_APPEND,errno,fname);
 
 	// Store the "actual" file name (with any extensions that were added present)
 	*actual_file_name = wget_strdup(unique[0] ? unique : fname);
+	xfree(unique);
 
 	if (fd >= 0) {
 		ssize_t rc;

@@ -316,34 +316,38 @@ void wget_http_add_credentials(wget_http_request *req, wget_http_challenge *chal
 		if (!realm || !nonce)
 			return;
 
+		char a1buf[32 * 2 + 1], a2buf[32 * 2 + 1];
+		char response_digest[32 * 2 + 1], cnonce[16] = "";
+
 		hashlen = wget_hash_get_len(hashtype);
-		char a1buf[hashlen * 2 + 1], a2buf[hashlen * 2 + 1];
-		char response_digest[hashlen * 2 + 1], cnonce[16] = "";
+		size_t buflen = hashlen * 2 + 1;
+		if (buflen > sizeof(a1buf))
+			return;
 
 		// A1BUF = H(user ":" realm ":" password)
-		wget_hash_printf_hex(hashtype, a1buf, sizeof(a1buf), "%s:%s:%s", username, realm, password);
+		wget_hash_printf_hex(hashtype, a1buf, buflen, "%s:%s:%s", username, realm, password);
 
 		if (!wget_strcasecmp_ascii(algorithm, "MD5-sess") || !wget_strcasecmp_ascii(algorithm, "SHA-256-sess")) {
 			// A1BUF = H( H(user ":" realm ":" password) ":" nonce ":" cnonce )
 			wget_snprintf(cnonce, sizeof(cnonce), "%08x", (unsigned) wget_random()); // create random hex string
-			wget_hash_printf_hex(hashtype, a1buf, sizeof(a1buf), "%s:%s:%s", a1buf, nonce, cnonce);
+			wget_hash_printf_hex(hashtype, a1buf, buflen, "%s:%s:%s", a1buf, nonce, cnonce);
 		}
 
 		// A2BUF = H(method ":" path)
-		wget_hash_printf_hex(hashtype, a2buf, sizeof(a2buf), "%s:/%s", req->method, req->esc_resource.data);
+		wget_hash_printf_hex(hashtype, a2buf, buflen, "%s:/%s", req->method, req->esc_resource.data);
 
 		if (!qop) {
 			// RFC 2069 Digest Access Authentication
 
 			// RESPONSE_DIGEST = H(A1BUF ":" nonce ":" A2BUF)
-			wget_hash_printf_hex(hashtype, response_digest, sizeof(response_digest), "%s:%s:%s", a1buf, nonce, a2buf);
+			wget_hash_printf_hex(hashtype, response_digest, buflen, "%s:%s:%s", a1buf, nonce, a2buf);
 		} else { // if (!wget_strcasecmp_ascii(qop, "auth") || !wget_strcasecmp_ascii(qop, "auth-int")) {
 			// RFC 2617 Digest Access Authentication
 			if (!*cnonce)
 				wget_snprintf(cnonce, sizeof(cnonce), "%08x", (unsigned) wget_random()); // create random hex string
 
 			// RESPONSE_DIGEST = H(A1BUF ":" nonce ":" nc ":" cnonce ":" qop ": " A2BUF)
-			wget_hash_printf_hex(hashtype, response_digest, sizeof(response_digest),
+			wget_hash_printf_hex(hashtype, response_digest, buflen,
 				"%s:%s:00000001:%s:%s:%s", a1buf, nonce, /* nc, */ cnonce, qop, a2buf);
 		}
 
@@ -844,9 +848,19 @@ int wget_http_send_request(wget_http_connection *conn, wget_http_request *req)
 #ifdef WITH_LIBNGHTTP2
 	if (wget_tcp_get_protocol(conn->tcp) == WGET_PROTOCOL_HTTP_2_0) {
 		char length_str[32];
-		int n = 4 + wget_vector_size(req->headers);
-		nghttp2_nv nvs[n], *nvp;
-		char resource[req->esc_resource.length + 2];
+		nghttp2_nv *nvs, *nvp;
+		char *resource;
+
+		if (!(nvs = wget_malloc(sizeof(nghttp2_nv) * (4 + wget_vector_size(req->headers))))) {
+			error_printf(_("Failed to allocate nvs[%d]\n"), 4 + wget_vector_size(req->headers));
+			return -1;
+		}
+
+		if (!(resource = wget_malloc(req->esc_resource.length + 2))) {
+			xfree(nvs);
+			error_printf(_("Failed to allocate resource[%zu]\n"), req->esc_resource.length + 2);
+			return -1;
+		}
 
 		resource[0] = '/';
 		memcpy(resource + 1, req->esc_resource.data, req->esc_resource.length + 1);
@@ -894,6 +908,9 @@ int wget_http_send_request(wget_http_connection *conn, wget_http_request *req)
 			// nghttp2 does strdup of name+value and lowercase conversion of 'name'
 			req->stream_id = nghttp2_submit_request(conn->http2_session, NULL, nvs, nvp - nvs, NULL, ctx);
 		}
+
+		xfree(resource);
+		xfree(nvs);
 
 		if (req->stream_id < 0) {
 			error_printf(_("Failed to submit HTTP2 request\n"));
