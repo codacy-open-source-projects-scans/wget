@@ -115,6 +115,7 @@ static struct config {
 	.key_type = WGET_SSL_X509_FMT_PEM,
 	.secure_protocol = "AUTO",
 	.ca_directory = "system",
+	.ca_file = "system",
 #ifdef WITH_LIBNGHTTP2
 	.alpn = "h2,http/1.1",
 #endif
@@ -501,17 +502,28 @@ out:
 static int init;
 static wget_thread_mutex mutex;
 
-static void __attribute__ ((constructor)) tls_init(void)
-{
-	if (!mutex)
-		wget_thread_mutex_init(&mutex);
-}
-
-static void __attribute__ ((destructor)) tls_exit(void)
+static void tls_exit(void)
 {
 	if (mutex)
 		wget_thread_mutex_destroy(&mutex);
 }
+
+INITIALIZER(tls_init)
+{
+	if (!mutex) {
+		wget_thread_mutex_init(&mutex);
+#ifdef DEBUG_WOLFSSL
+		wolfSSL_Debugging_ON();
+#endif // DEBUG_WOLFSSL
+
+		// Initialize paths while in a thread-safe environment (mostly for _WIN32).
+		wget_ssl_default_cert_dir();
+		wget_ssl_default_ca_bundle_path();
+
+		atexit(tls_exit);
+	}
+}
+
 
 /*
 static void set_credentials(gnutls_certificate_credentials_t *credentials)
@@ -636,11 +648,18 @@ void wget_ssl_init(void)
 
 		if (config.check_certificate) {
 			if (!wget_strcmp(config.ca_directory, "system"))
-				config.ca_directory = "/etc/ssl/certs";
-
+				config.ca_directory = wget_ssl_default_cert_dir();
+			if (config.ca_file && !wget_strcmp(config.ca_file, "system"))
+				config.ca_file = wget_ssl_default_ca_bundle_path();
+			const char* dir = config.ca_directory;
+			const char* file = config.ca_file;
+			if (dir && access(dir, F_OK))
+				dir = NULL;
+			else if (file && access(file, F_OK)) //yes else if, good to throw an error if neither are there, just don't want to do it if at least one exists
+				file = NULL;
 			// Load client certificates into WOLFSSL_CTX
-			if (wolfSSL_CTX_load_verify_locations(ssl_ctx, config.ca_file, config.ca_directory) != SSL_SUCCESS) {
-				error_printf(_("Failed to load %s, please check the file.\n"), config.ca_directory);
+			if (wolfSSL_CTX_load_verify_locations(ssl_ctx, file, dir) != SSL_SUCCESS) {
+				error_printf(_("Failed to load CA pem: %s or cert dir: %s, ssl verification will likely fail.\n"), config.ca_file, config.ca_directory);
 				goto out;
 			}
 			wolfSSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
