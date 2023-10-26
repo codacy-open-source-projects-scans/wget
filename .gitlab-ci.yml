@@ -47,6 +47,14 @@ variables:
   CONFIGURE_BASE_FLAGS: --enable-assert --cache-file cache/config.cache
   CFLAGS_DEFAULT: -O1 -g -ggdb3
 
+sast:
+  stage: tarball
+  # SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
+  variables:
+    SAST_EXCLUDED_PATHS: examples, fuzz, tests, unit-tests
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
 
 # We organize the CI runners as thus:
 #   1. Debian Stretch Build:
@@ -484,7 +492,7 @@ MinGW64-static:
     - ./bootstrap --skip-po
     - LDFLAGS="-Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive"
       CFLAGS="$CFLAGS_DEFAULT -DNGHTTP2_STATICLIB"
-      ./configure $CONFIGURE_BASE_FLAGS --build=x86_64-pc-linux-gnu --host=$PREFIX --disable-shared --enable-static --without-gpgme
+      ./configure $CONFIGURE_BASE_FLAGS --build=x86_64-pc-linux-gnu --host=$PREFIX --disable-shared --enable-static --without-gpgme --enable-threads=windows
     - make -j$(nproc)
     - mv src/wget2.exe .
   tags:
