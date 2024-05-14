@@ -860,6 +860,11 @@ static int cert_verify_ocsp(gnutls_x509_crt_t cert, gnutls_x509_crt_t issuer)
 		return -1;
 	}
 
+	if (!resp) {
+		debug_printf("Missing response from OCSP server\n");
+		return -1;
+	}
+
 	/* verify and check the response for revoked cert */
 	ret = check_ocsp_response(cert, issuer, resp, &nonce);
 	wget_buffer_free(&resp);
@@ -1153,7 +1158,7 @@ static int verify_certificate_callback(gnutls_session_t session)
 		cert_verify_hpkp(cert, hostname, session);
 
 #ifdef WITH_OCSP
-		if (config.ocsp && it > nvalid) {
+		if (config.ocsp && it >= nvalid) {
 			char fingerprint[64 * 2 +1];
 			int revoked;
 
