@@ -57,6 +57,7 @@ static void global_exit(void)
 		initialized = false;
 	}
 }
+
 INITIALIZER(global_init)
 {
 	if (!initialized) {
