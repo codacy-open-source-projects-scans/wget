@@ -477,7 +477,9 @@ static int establish_proxy_connect(wget_tcp *tcp, const char *host, uint16_t por
 	while (nbytes > 0 && c_isspace(sbuf[--nbytes]))
 		sbuf[nbytes] = 0;
 
-	if (wget_strncasecmp_ascii(sbuf, "HTTP/1.1 200", 12)) {
+	// Additionally accepting HTTP/1.0 solves at least some compatibility issues.
+	// See https://gitlab.com/gnuwget/wget2/-/issues/666#note_2002037243
+	if (wget_strncasecmp_ascii(sbuf, "HTTP/1.1 200", 12) && wget_strncasecmp_ascii(sbuf, "HTTP/1.0 200", 12)) {
 		error_printf(_("Proxy connection failed with: %s\n"), sbuf);
 		return WGET_E_CONNECT;
 	}
@@ -774,7 +776,7 @@ wget_http_response *wget_http_get_response_cb(wget_http_connection *conn)
 		// debug_printf("nbytes %zd nread %zd %zu\n", nbytes, nread, bufsize);
 		nread += nbytes;
 		buf[nread] = 0; // 0-terminate to allow string functions
-
+skip_1xx:
 		if (nread < 4) continue;
 
 		if (nread - nbytes <= 4)
@@ -788,21 +790,26 @@ wget_http_response *wget_http_get_response_cb(wget_http_connection *conn)
 
 			debug_printf("# got header %zd bytes:\n%s\n\n", p - buf, buf);
 
+			if (!(resp = wget_http_parse_response_header(buf)))
+				goto cleanup; // something is wrong with the header
+
+			if (H_10X(resp->code)) {
+				wget_http_free_response(&resp);
+				p += 4;
+				// calculate number of bytes so far read
+				nbytes = nread -= (p - buf);
+				// move remaining data to begin of buf
+				memmove(buf, p, nread + 1);
+				goto skip_1xx; // ignore intermediate response, no body expected
+			}
+
 			if (req->response_keepheader) {
 				wget_buffer *header = wget_buffer_alloc(p - buf + 4);
 				wget_buffer_memcpy(header, buf, p - buf);
 				wget_buffer_memcat(header, "\r\n\r\n", 4);
 
-				if (!(resp = wget_http_parse_response_header(buf))) {
-					wget_buffer_free(&header);
-					goto cleanup; // something is wrong with the header
-				}
-
 				resp->header = header;
 
-			} else {
-				if (!(resp = wget_http_parse_response_header(buf)))
-					goto cleanup; // something is wrong with the header
 			}
 
 			resp->req = req;
@@ -814,7 +821,7 @@ wget_http_response *wget_http_get_response_cb(wget_http_connection *conn)
 				req->header_callback(resp, req->header_user_data);
 			}
 
-			if (req && !wget_strcasecmp_ascii(req->method, "HEAD"))
+			if (!wget_strcasecmp_ascii(req->method, "HEAD"))
 				goto cleanup; // a HEAD response won't have a body
 
 			http_fix_broken_server_encoding(resp);
@@ -849,7 +856,6 @@ wget_http_response *wget_http_get_response_cb(wget_http_connection *conn)
 		goto cleanup;
 	}
 	if (!resp
-	 || H_10X(resp->code)
 	 || resp->code == HTTP_STATUS_NO_CONTENT
 	 || resp->code == HTTP_STATUS_NOT_MODIFIED
 	 || (resp->transfer_encoding == wget_transfer_encoding_identity && resp->content_length == 0 && resp->content_length_valid)) {

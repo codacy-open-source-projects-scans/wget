@@ -173,7 +173,8 @@ static wget_hashmap
 static DOWNLOADER
 	*downloaders;
 static void
-	*downloader_thread(void *p);
+	*downloader_thread(void *p),
+	*progress_report(void *p);
 static wget_thread_mutex
 	quota_mutex;
 static long long
@@ -633,6 +634,51 @@ static void test_modify_hsts(wget_iri *iri)
 		wget_iri_set_scheme(iri, WGET_IRI_SCHEME_HTTPS);
 	}
 }
+
+// Add iri to parents (for --no-parent option).
+static void add_parent(wget_iri *iri)
+{
+	char *p;
+
+	if (!parents)
+		parents = wget_vector_create(4, NULL);
+
+	// calc length of directory part in iri->path (including last /)
+	if (!iri->path || !(p = strrchr(iri->path, '/')))
+		iri->dirlen = 0;
+	else
+		iri->dirlen = p - iri->path + 1;
+
+	wget_vector_add(parents, iri);
+}
+
+static bool is_parent(const wget_iri *iri)
+{
+	for (int it = 0; it < wget_vector_size(parents); it++) {
+		wget_iri *parent = wget_vector_get(parents, it);
+
+		if (wget_iri_compare(parent, iri) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+static bool matches_parent(const wget_iri *iri)
+{
+	for (int it = 0; it < wget_vector_size(parents); it++) {
+		wget_iri *parent = wget_vector_get(parents, it);
+
+		if (!wget_strcmp(parent->host, iri->host)) {
+			if (!parent->dirlen || !wget_strncmp(parent->path, iri->path, parent->dirlen)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 // Add URLs given by user (command line, file or -i option).
 // Needs to be thread-save.
 static void queue_url_from_local(const char *url, wget_iri *base, const char *encoding, int flags)
@@ -698,20 +744,8 @@ static void queue_url_from_local(const char *url, wget_iri *base, const char *en
 				wget_vector_add(config.domains, wget_strdup(iri->host));
 		}
 
-		if (!config.parent) {
-			char *p;
-
-			if (!parents)
-				parents = wget_vector_create(4, NULL);
-
-			// calc length of directory part in iri->path (including last /)
-			if (!iri->path || !(p = strrchr(iri->path, '/')))
-				iri->dirlen = 0;
-			else
-				iri->dirlen = p - iri->path + 1;
-
-			wget_vector_add(parents, iri);
-		}
+		if (!config.parent)
+			add_parent(iri);
 	}
 
 	// only download content from hosts given on the command line or from input file
@@ -913,22 +947,9 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 	}
 
 	if (config.recursive && !config.parent && !(flags & URL_FLG_REQUISITE)) {
-		// do not ascend above the parent directory
-		bool ok = false;
-
-		// see if at least one parent matches
-		for (int it = 0; it < wget_vector_size(parents); it++) {
-			wget_iri *parent = wget_vector_get(parents, it);
-
-			if (!wget_strcmp(parent->host, iri->host)) {
-				if (!parent->dirlen || !wget_strncmp(parent->path, iri->path, parent->dirlen)) {
-					ok = true;
-					break;
-				}
-			}
-		}
-
-		if (!ok) {
+		if (job && (flags & URL_FLG_REDIRECTION) && is_parent(job->iri)) {
+			add_parent(iri);
+		} else if (!matches_parent(iri)) {
 			info_printf(_("URL '%s' not followed (parent ascending not allowed)\n"), url);
 			goto out;
 		}
@@ -1018,6 +1039,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 			new_job->original_url = job->iri;
 			new_job->redirect_get = job->redirect_get;
 			new_job->robotstxt = job->robotstxt;
+			new_job->requested_by_user = job->requested_by_user;
 		} else {
 			new_job->parent_id = job->id;
 			new_job->level = job->level + 1;
@@ -1263,7 +1285,6 @@ static void print_status(DOWNLOADER *downloader WGET_GCC_UNUSED, const char *fmt
 
 static void print_progress_report(long long start_time)
 {
-
 	if (config.progress == PROGRESS_TYPE_BAR) {
 		char quota_buf[16];
 		char speed_buf[16];
@@ -1429,6 +1450,10 @@ int main(int argc, const char **argv)
 	if (config.progress == PROGRESS_TYPE_BAR) {
 		if (bar_init()) {
 			start_time = wget_get_timemillis();
+			static wget_thread progress_thread;
+			if ((rc = wget_thread_start(&progress_thread, progress_report, NULL, 0)) != 0) {
+				error_printf(_("Failed to start progress report thread, error %d\n"), rc);
+			}
 		}
 	}
 
@@ -1546,6 +1571,19 @@ int main(int argc, const char **argv)
 	plugin_db_finalize(get_exit_status());
 
 	return get_exit_status();
+}
+
+// Thread function to update the progress report bar.
+void *progress_report(void *p WGET_GCC_UNUSED)
+{
+	while (!terminate) {
+		wget_millisleep(1000);
+
+		// Wake up main thread to update the progress report.
+		wget_thread_cond_signal(main_cond);
+	}
+
+	return NULL;
 }
 
 /*
@@ -4509,19 +4547,34 @@ static void fork_to_background(void)
 }
 
 #else // We assume every non-Windows OS supports fork()
+static char *create_unique(const char *name)
+{
+	char *fname = wget_strdup(name);
+
+	for (int it = 0; it < 9999; it++) {
+		if (it) {
+			fname = wget_aprintf("%s.%d", name, it);
+		}
+
+		int fd = open(fname, O_CREAT|O_WRONLY|O_EXCL, 0600);
+		if (fd != -1) {
+			close(fd);
+			return fname;
+		}
+
+		xfree(fname);
+	}
+
+	return wget_strdup(name);
+}
+
 static void fork_to_background(void)
 {
-	short logfile_changed = 0;
+	bool logfile_changed = false;
 
 	if (!config.logfile && (!config.quiet || config.server_response) && !config.dont_write) {
-		config.logfile = wget_strdup(WGET_DEFAULT_LOGFILE);
-		// truncate logfile
-		int fd = open(config.logfile, O_WRONLY | O_TRUNC);
-
-		if (fd != -1)
-			close(fd);
-
-		logfile_changed = 1;
+		config.logfile = create_unique(WGET_DEFAULT_LOGFILE);
+		logfile_changed = wget_strcmp(config.logfile, WGET_DEFAULT_LOGFILE) != 0;
 	}
 
 	pid_t pid = fork();
