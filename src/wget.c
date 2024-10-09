@@ -175,6 +175,8 @@ static DOWNLOADER
 static void
 	*downloader_thread(void *p),
 	*progress_report(void *p);
+static wget_thread
+	progress_thread;
 static wget_thread_mutex
 	quota_mutex;
 static long long
@@ -432,8 +434,6 @@ static int in_pattern_list(const wget_vector *v, const char *url)
 {
 	for (int it = 0; it < wget_vector_size(v); it++) {
 		const char *pattern = wget_vector_get(v, it);
-
-		debug_printf("pattern[%d] '%s' - %s\n", it, pattern, url);
 
 		if (strpbrk(pattern, "*?[]")) {
 			if (!fnmatch(pattern, url, config.ignore_case ? FNM_CASEFOLD : 0))
@@ -751,7 +751,7 @@ static void queue_url_from_local(const char *url, wget_iri *base, const char *en
 	// only download content from hosts given on the command line or from input file
 	if (wget_vector_contains(config.exclude_domains, iri->host)) {
 		// download from this scheme://domain are explicitly not wanted
-		debug_printf("not requesting '%s'. (Exclude Domains)\n", iri->uri);
+		debug_printf("not requesting '%s'. (Exclude Domains)\n", iri->safe_uri);
 		wget_thread_mutex_unlock(downloader_mutex);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		return;
@@ -764,7 +764,7 @@ static void queue_url_from_local(const char *url, wget_iri *base, const char *en
 	}
 
 	if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-		debug_printf("not requesting '%s'. (File already exists)\n", iri->uri);
+		debug_printf("not requesting '%s'. (Exclude Domains)\n", iri->safe_uri);
 		wget_thread_mutex_unlock(downloader_mutex);
 		if (config.recursive || config.page_requisites) {
 			parse_localfile(NULL, blacklistp->local_filename, NULL, NULL, iri);
@@ -777,7 +777,7 @@ static void queue_url_from_local(const char *url, wget_iri *base, const char *en
 		// a new host entry has been created
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-				debug_printf("not requesting '%s'. (File already exists)\n", iri->uri);
+				debug_printf("not requesting '%s'. (Exclude Domains)\n", iri->safe_uri);
 			} else {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
@@ -835,15 +835,6 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 	struct plugin_db_forward_url_verdict plugin_verdict;
 	bool http_fallback = 0;
 
-	if (flags & URL_FLG_REDIRECTION) { // redirect
-		if (job && job->redirection_level >= config.max_redirect) {
-			debug_printf("not requesting '%s'. (Max Redirections exceeded)\n", url);
-			return;
-		}
-	}
-
-	wget_info_printf(_("Adding URL: %s\n"), url);
-
 	const char *p = NULL;
 
 	if (config.cut_url_get_vars)
@@ -858,29 +849,39 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		iri = wget_iri_parse(url, encoding);
 
 	if (!iri) {
-		info_printf(_("Cannot resolve URI '%s'\n"), url);
+		info_printf(_("Cannot resolve URI\n"));
 		return;
 	}
+
+	if (flags & URL_FLG_REDIRECTION) { // redirect
+		if (job && job->redirection_level >= config.max_redirect) {
+			debug_printf("not requesting '%s'. (Max Redirections exceeded)\n", iri->safe_uri);
+			wget_iri_free(&iri);
+			return;
+		}
+	}
+
+	wget_info_printf(_("Adding URL: %s\n"), iri->safe_uri);
 
 	// Allow plugins to intercept URL
 	plugin_db_forward_url(iri, &plugin_verdict);
 
 	if (plugin_verdict.reject) {
-		info_printf(_("not requesting '%s'. (Plugin Verdict)\n"), url);
+		info_printf(_("not requesting '%s'. (Plugin Verdict)\n"), iri->safe_uri);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		wget_iri_free(&iri);
 		return;
 	}
 
 	if (plugin_verdict.alt_iri) {
-		debug_printf("Plugin changed IRI. %s -> %s\n", iri->uri, plugin_verdict.alt_iri->uri);
+		debug_printf("Plugin changed IRI. %s -> %s\n", iri->safe_uri, plugin_verdict.alt_iri->uri);
 		wget_iri_free(&iri);
 		iri = plugin_verdict.alt_iri;
 		plugin_verdict.alt_iri = NULL;
 	}
 
 	if (!wget_iri_supported(iri)) {
-		info_printf(_("URL '%s' not followed (unsupported scheme)\n"), url);
+		info_printf(_("URL '%s' not followed (unsupported scheme)\n"), iri->safe_uri);
 		wget_iri_free(&iri);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		return;
@@ -890,7 +891,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		test_modify_hsts(iri);
 
 	if (config.https_only && iri->scheme != WGET_IRI_SCHEME_HTTPS) {
-		info_printf(_("URL '%s' not followed (https-only requested)\n"), url);
+		info_printf(_("URL '%s' not followed (https-only requested)\n"), iri->safe_uri);
 		wget_iri_free(&iri);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		return;
@@ -916,7 +917,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		}
 
 		if (reason) {
-			info_printf(_("URL '%s' not followed (%s)\n"), iri->uri, reason);
+			info_printf(_("URL '%s' not followed (%s)\n"), iri->safe_uri, reason);
 			wget_iri_free(&iri);
 			plugin_db_forward_url_verdict_free(&plugin_verdict);
 			return;
@@ -968,7 +969,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		}
 
 		if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-			info_printf(_("URL '%s' not requested (file already exists)\n"), iri->uri);
+			info_printf(_("URL '%s' not requested (file already exists)\n"), iri->safe_uri);
 			wget_thread_mutex_unlock(downloader_mutex);
 			if (config.recursive && (!config.level || !job || (job && job->level < config.level + config.page_requisites))) {
 				parse_localfile(job, blacklistp->local_filename, encoding, NULL, iri);
@@ -983,7 +984,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		// a new host entry has been created
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-				debug_printf("not requesting '%s' (File already exists)\n", iri->uri);
+				debug_printf("not requesting '%s' (File already exists)\n", iri->safe_uri);
 			} else {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
@@ -996,7 +997,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 				wget_string *path = wget_robots_get_path(host->robots, it);
 				// info_printf("%s: checked robot path '%.*s' / '%s' / '%s'\n", __func__, (int)path->len, path->path, iri->path, iri->uri);
 				if (path->len && !strncmp(path->p + 1, iri->path, path->len - 1)) {
-					info_printf(_("URL '%s' not followed (disallowed by robots.txt)\n"), iri->uri);
+					info_printf(_("URL '%s' not followed (disallowed by robots.txt)\n"), iri->safe_uri);
 					goto out;
 				}
 			}
@@ -1011,19 +1012,19 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		if ((config.accept_patterns && !in_pattern_list(config.accept_patterns, iri->uri))
 			|| (config.accept_regex && !regex_match(iri->uri, config.accept_regex)))
 		{
-			debug_printf("not requesting '%s'. (doesn't match accept pattern)\n", iri->uri);
+			debug_printf("not requesting '%s'. (doesn't match accept pattern)\n", iri->safe_uri);
 			goto out;
 		}
 
 		if ((config.reject_patterns && in_pattern_list(config.reject_patterns, iri->uri))
 			|| (config.reject_regex && regex_match(iri->uri, config.reject_regex)))
 		{
-			debug_printf("not requesting '%s'. (matches reject pattern)\n", iri->uri);
+			debug_printf("not requesting '%s'. (matches reject pattern)\n", iri->safe_uri);
 			goto out;
 		}
 
 		if (config.exclude_directories && in_directory_pattern_list(config.exclude_directories, iri->path)) {
-			debug_printf("not requesting '%s' (path excluded)\n", iri->uri);
+			debug_printf("not requesting '%s' (path excluded)\n", iri->safe_uri);
 			goto out;
 		}
 	}
@@ -1450,7 +1451,6 @@ int main(int argc, const char **argv)
 	if (config.progress == PROGRESS_TYPE_BAR) {
 		if (bar_init()) {
 			start_time = wget_get_timemillis();
-			static wget_thread progress_thread;
 			if ((rc = wget_thread_start(&progress_thread, progress_report, NULL, 0)) != 0) {
 				error_printf(_("Failed to start progress report thread, error %d\n"), rc);
 			}
@@ -1553,6 +1553,9 @@ int main(int argc, const char **argv)
  out:
 	if (is_testing() || wget_match_tail(argv[0], "wget2_noinstall")) {
 		// freeing to avoid disguising valgrind output
+		if ((rc = wget_thread_join(&progress_thread)) != 0)
+			error_printf(_("Failed to wait for progress thread (%d %d)\n"), rc, errno);
+
 		blacklist_free();
 		hosts_free();
 		xfree(downloaders);
@@ -1764,11 +1767,11 @@ static int process_response_header(wget_http_response *resp)
 	DOWNLOADER *downloader = job->downloader;
 	const wget_iri *iri = job->iri;
 
-	if (resp->code < 400 || resp->code > 599)
-		print_status(downloader, "HTTP response %d %s [%s]\n", resp->code, resp->reason, iri->uri);
-	else
-		print_status(downloader, "HTTP ERROR response %d %s [%s]\n", resp->code, resp->reason, iri->uri);
-
+	if (resp->code < 400 || resp->code > 599) {
+		print_status(downloader, "HTTP response %d %s [%s]\n", resp->code, resp->reason, iri->safe_uri);
+	} else {
+		print_status(downloader, "HTTP ERROR response %d %s [%s]\n", resp->code, resp->reason, iri->safe_uri);
+	}
 	if (resp->length_inconsistent && resp->code == 200) {
 		print_status(downloader, "Unexpected body length %zu.", resp->content_length);
 		if (config.tries && ++job->failures < config.tries) {
@@ -1963,7 +1966,7 @@ static void process_head_response(wget_http_response *resp)
 			wget_thread_mutex_unlock(etag_mutex);
 
 			if (rc) {
-				info_printf(_("Not scanning '%s' (known ETag)\n"), job->iri->uri);
+				info_printf(_("Not scanning '%s' (known ETag)\n"), job->iri->safe_uri);
 				return;
 			}
 		}
@@ -2359,7 +2362,7 @@ static void process_response(wget_http_response *resp)
 static void fallback_to_http(JOB *job)
 {
 	if (!job->robotstxt) {
-		char *http_url = wget_aprintf("http://%s", job->iri->uri + 8);
+		char *http_url = wget_aprintf("http://%s", job->iri->safe_uri + 8);
 		queue_url_from_remote(NULL, "utf-8", http_url, URL_FLG_SKIPFALLBACK, NULL);
 		host_remove_job(job->host, job);
 		xfree(http_url);
@@ -2565,6 +2568,9 @@ out:
 
 	// if we terminate, tell the other downloaders
 	wget_thread_cond_signal(worker_cond);
+
+	// ... and main thread so it does not get stuck on shutdown
+	wget_thread_cond_signal(main_cond);
 
 	return NULL;
 }
@@ -2947,8 +2953,9 @@ void sitemap_parse_xml_gz(JOB *job, wget_buffer *gzipped_data, const char *encod
 		wget_decompress_close(dc);
 
 		sitemap_parse_xml(job, plain.data, encoding, base);
-	} else
-		error_printf(_("Can't scan '%s' because no libz support enabled at compile time\n"), job->iri->uri);
+	} else {
+		error_printf(_("Can't scan '%s' because no libz support enabled at compile time\n"), job->iri->safe_uri);
+	}
 
 	wget_buffer_deinit(&plain);
 }
@@ -4143,7 +4150,7 @@ int http_send_request(const wget_iri *iri, const wget_iri *original_url, DOWNLOA
 	if (job->head_first) {
 		// In spider mode, we first make a HEAD request.
 		// If the Content-Type header gives us not a parseable type, we are done.
-		print_status(downloader, "[%d] Checking '%s' ...\n", downloader->id, iri->uri);
+		print_status(downloader, "[%d] Checking '%s' ...\n", downloader->id, iri->safe_uri);
 	} else {
 		if (job->part)
 			print_status(downloader, "downloading part %d/%d (%lld-%lld) %s from %s\n",
@@ -4151,9 +4158,9 @@ int http_send_request(const wget_iri *iri, const wget_iri *original_url, DOWNLOA
 				(long long)job->part->position, (long long)(job->part->position + job->part->length - 1),
 				job->metalink->name, iri->host);
 		else if (config.progress == PROGRESS_TYPE_BAR)
-			bar_print(downloader->id, iri->uri);
+			bar_print(downloader->id, iri->safe_uri);
 		else
-			print_status(downloader, "[%d] Downloading '%s' ...\n", downloader->id, iri->uri);
+			print_status(downloader, "[%d] Downloading '%s' ...\n", downloader->id, iri->safe_uri);
 	}
 
 	wget_http_request *req = http_create_request(iri, downloader->job);
