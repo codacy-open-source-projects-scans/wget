@@ -25,7 +25,7 @@ CFLAGS=$CFLAGS
 LDFLAGS=$LDFLAGS
 
 AC_PREREQ([2.69])
-AC_INIT([wget2],[2.1.0],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
+AC_INIT([wget2],[2.2.0],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
 
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -77,8 +77,8 @@ LT_INIT([dlopen])
 # 4. If any interfaces have been added, removed, or changed since the last update, increment current, and set revision to 0.
 # 5. If any interfaces have been added since the last public release, then increment age.
 # 6. If any existing interfaces have been removed or changed since the last public release, then set age to 0.
-AC_SUBST([LIBWGET_SO_VERSION], [2:0:0])
-AC_SUBST([LIBWGET_VERSION], [2.1.0])
+AC_SUBST([LIBWGET_SO_VERSION], [3:0:0])
+AC_SUBST([LIBWGET_VERSION], [2.2.0])
 
 #
 # Generate version defines for include file
@@ -137,6 +137,12 @@ if test -n "$WARN_CFLAGS"; then
     nw="$nw -Wlong-long" # gcc-12, we use C99
     nw="$nw -Wstrict-flex-arrays" # gcc-13 warns about it
     nw="$nw -Wuseless-cast" # gcc-14 warns about it (pretty useless for portable code)
+    nw="$nw -Wc99-c11-compat" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
+    nw="$nw -Wc11-c23-compat" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
+    nw="$nw -Wc11-c2x-compat" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
+    nw="$nw -Wpedantic" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
+    nw="$nw -Wundef" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
+
     if test "$cross_compiling" = yes; then
       nw="$nw -Wformat"
     fi
@@ -430,13 +436,13 @@ if test "$enable_doc" = yes; then
     DOCS_INFO="yes"
     LIBWGET_DOCS_INFO="yes (found:"
     if test -n "$DOXYGEN"; then
-      LIBWGET_DOCS_INFO="$LIBWGET_DOCS_INFO Doxygen)"
+      LIBWGET_DOCS_INFO="$LIBWGET_DOCS_INFO $DOXYGEN)"
     else
       LIBWGET_DOCS_INFO="no"
     fi
     WGET2_DOCS_INFO="yes (found:"
     if test -n "$PANDOC"; then
-      WGET2_DOCS_INFO="$WGET2_DOCS_INFO Pandoc)"
+      WGET2_DOCS_INFO="$WGET2_DOCS_INFO $PANDOC)"
     else
       WGET2_DOCS_INFO="no"
     fi

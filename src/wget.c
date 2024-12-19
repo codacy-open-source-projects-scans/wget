@@ -148,7 +148,7 @@ static void
 	rss_parse(JOB *job, const char *data, const char *encoding, const wget_iri *base),
 	rss_parse_localfile(JOB *job, const char *fname, const char *encoding, const wget_iri *base),
 	metalink_parse_localfile(const char *fname),
-	html_parse(JOB *job, int level, const char *fname, const char *data, size_t len, const char *encoding, const wget_iri *base),
+	html_parse(JOB *job, int level, const char *fname, const char *html, size_t len, const char *encoding, const wget_iri *base),
 	html_parse_localfile(JOB *job, int level, const char *fname, const char *encoding, const wget_iri *base),
 	css_parse(JOB *job, const char *data, size_t len, const char *encoding, const wget_iri *base),
 	css_parse_localfile(JOB *job, const char *fname, const char *encoding, const wget_iri *base),
@@ -160,7 +160,7 @@ static int
 	read_xattr_metadata(const char *name, char *value, size_t size, int fd),
 	write_xattr_metadata(const char *name, const char *value, int fd),
 	write_xattr_last_modified(int64_t last_modified, int fd),
-	set_file_metadata(const wget_iri *origin_url, const wget_iri *referrer_url, const char *mime_type, const char *charset, int64_t last_modified, FILE *fp),
+	set_file_metadata(const wget_iri *origin_iri, const wget_iri *referrer_iri, const char *mime_type, const char *charset, int64_t last_modified, FILE *fp),
 	http_send_request(const wget_iri *iri, const wget_iri *original_url, DOWNLOADER *downloader);
 wget_http_response
 	*http_receive_response(wget_http_connection *conn);
@@ -218,7 +218,7 @@ static void atomic_increment_int(int *p)
 // we have to modify and check the quota in one (protected) step.
 static long long quota_modify_read(size_t nbytes)
 {
-	return fetch_and_add_longlong(&quota, (long long)nbytes);
+	return fetch_and_add_longlong(&quota, (long long) nbytes);
 }
 
 static void nop(int sig)
@@ -361,10 +361,10 @@ static void program_deinit(void)
  * E.g. if 'dir' is `/something', match_subdir() will return true if and
  * only if 'subdir' begins with `/something/' or is exactly '/something'.
  */
-static bool match_subdir(const char *dir, const char *subdir, char ignore_case)
+static bool match_subdir(const char *dir, const char *subdir, bool ignore_case)
 {
 	if (*dir == '\0')
-		return (strcmp(subdir, "/")) ? false : true;
+		return strcmp(subdir, "/") == 0;
 
 	if (ignore_case)
 		for (; *dir && *subdir && (c_tolower(*dir) == c_tolower(*subdir)); ++dir, ++subdir)
@@ -430,23 +430,23 @@ static int in_directory_pattern_list(const wget_vector *v, const char *fname)
 	return default_exclude;
 }
 
-static int in_pattern_list(const wget_vector *v, const char *url)
+static bool in_pattern_list(const wget_vector *v, const char *url)
 {
 	for (int it = 0; it < wget_vector_size(v); it++) {
 		const char *pattern = wget_vector_get(v, it);
 
 		if (strpbrk(pattern, "*?[]")) {
 			if (!fnmatch(pattern, url, config.ignore_case ? FNM_CASEFOLD : 0))
-				return 1;
+				return true;
 		} else if (config.ignore_case) {
 			if (wget_match_tail_nocase(url, pattern))
-				return 1;
+				return true;
 		} else if (wget_match_tail(url, pattern)) {
-			return 1;
+			return true;
 		}
 	}
 
-	return 0;
+	return false;
 }
 
 static int in_host_pattern_list(const wget_vector *v, const char *hostname)
@@ -855,19 +855,17 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 
 	if (flags & URL_FLG_REDIRECTION) { // redirect
 		if (job && job->redirection_level >= config.max_redirect) {
-			debug_printf("not requesting '%s'. (Max Redirections exceeded)\n", iri->safe_uri);
+			info_printf("URL '%s' not followed (max redirections exceeded)\n", iri->safe_uri);
 			wget_iri_free(&iri);
 			return;
 		}
 	}
 
-	wget_info_printf(_("Adding URL: %s\n"), iri->safe_uri);
-
 	// Allow plugins to intercept URL
 	plugin_db_forward_url(iri, &plugin_verdict);
 
 	if (plugin_verdict.reject) {
-		info_printf(_("not requesting '%s'. (Plugin Verdict)\n"), iri->safe_uri);
+		info_printf(_("URL '%s' no followed (plugin verdict)\n"), iri->safe_uri);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		wget_iri_free(&iri);
 		return;
@@ -969,7 +967,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		}
 
 		if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-			info_printf(_("URL '%s' not requested (file already exists)\n"), iri->safe_uri);
+			info_printf(_("URL '%s' not followed (file already exists)\n"), iri->safe_uri);
 			wget_thread_mutex_unlock(downloader_mutex);
 			if (config.recursive && (!config.level || !job || (job && job->level < config.level + config.page_requisites))) {
 				parse_localfile(job, blacklistp->local_filename, encoding, NULL, iri);
@@ -984,7 +982,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		// a new host entry has been created
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-				debug_printf("not requesting '%s' (File already exists)\n", iri->safe_uri);
+				info_printf("URL '%s' not followed (file already exists)\n", iri->safe_uri);
 			} else {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
@@ -1012,22 +1010,24 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		if ((config.accept_patterns && !in_pattern_list(config.accept_patterns, iri->uri))
 			|| (config.accept_regex && !regex_match(iri->uri, config.accept_regex)))
 		{
-			debug_printf("not requesting '%s'. (doesn't match accept pattern)\n", iri->safe_uri);
+			info_printf("URL '%s' not followed (doesn't match accept pattern)\n", iri->safe_uri);
 			goto out;
 		}
 
 		if ((config.reject_patterns && in_pattern_list(config.reject_patterns, iri->uri))
 			|| (config.reject_regex && regex_match(iri->uri, config.reject_regex)))
 		{
-			debug_printf("not requesting '%s'. (matches reject pattern)\n", iri->safe_uri);
+			debug_printf("URL '%s' not followed (matches reject pattern)\n", iri->safe_uri);
 			goto out;
 		}
 
 		if (config.exclude_directories && in_directory_pattern_list(config.exclude_directories, iri->path)) {
-			debug_printf("not requesting '%s' (path excluded)\n", iri->safe_uri);
+			debug_printf("URL '%s' not followed (path excluded)\n", iri->safe_uri);
 			goto out;
 		}
 	}
+
+	wget_info_printf(_("Enqueue %s\n"), iri->safe_uri);
 
 	new_job = job_init(&job_buf, blacklistp, http_fallback);
 
@@ -1976,7 +1976,7 @@ static void process_head_response(wget_http_response *resp)
 
 		job->done = 0; // do this job again with GET request
 		return;
-	} else if (config.chunk_size && resp->content_length > config.chunk_size) {
+	} else if (config.chunk_size && (long long) resp->content_length > config.chunk_size) {
 		// create metalink structure without hashing
 		wget_metalink_piece piece = { .length = config.chunk_size };
 		wget_metalink_mirror mirror = { .location = "-", .iri = job->iri };
@@ -2171,7 +2171,13 @@ static void process_response(wget_http_response *resp)
 		{
 			// print_status(downloader, "get metalink info\n");
 			// save_file(resp, job->local_filename, O_TRUNC);
-			job->metalink = resp->body && resp->body->data ? wget_metalink_parse(resp->body->data) : NULL;
+			if (resp->body && resp->body->data) {
+				job->metalink = wget_metalink_parse(resp->body->data);
+				if (config.output_document) {
+					xfree(job->metalink->name);
+					job->metalink->name = wget_strdup(config.output_document);
+				}
+			}
 		}
 		if (job->metalink) {
 			if (job->metalink->size <= 0) {
@@ -3412,9 +3418,9 @@ static int WGET_GCC_NONNULL((1)) prepare_file(wget_http_response *resp, const ch
 		// <fname> can only be NULL if config.delete_after is set
 		if (!strcmp(fname, "-")) {
 			if (config.save_headers) {
-				size_t rc = safe_write(1, resp->header->data, resp->header->length);
+				ptrdiff_t rc = safe_write(1, resp->header->data, resp->header->length);
 				if (rc == SAFE_WRITE_ERROR) {
-					error_printf(_("Failed to write to STDOUT (%zu, errno=%d)\n"), rc, errno);
+					error_printf(_("Failed to write to STDOUT (%td, errno=%d)\n"), rc, errno);
 					set_exit_status(EXIT_STATUS_IO);
 				}
 			}
@@ -3535,11 +3541,10 @@ static int WGET_GCC_NONNULL((1)) prepare_file(wget_http_response *resp, const ch
 		if (size >= 0) {
 			fd = open_unique(fname, O_RDONLY | O_BINARY, 0, multiple, unique, unique_size);
 			if (fd >= 0) {
-				size_t rc;
 				if ((unsigned long long) size > max_partial_content)
 					size = max_partial_content;
 				wget_buffer_memset_append(partial_content, 0, size);
-				rc = safe_read(fd, partial_content->data, size);
+				ptrdiff_t rc = safe_read(fd, partial_content->data, size);
 				if (rc == SAFE_READ_ERROR || (long long) rc != size) {
 					error_printf(_("Failed to load partial content from '%s' (errno=%d)\n"),
 						fname, errno);
@@ -3811,7 +3816,7 @@ static int get_body(wget_http_response *resp, void *context, const char *data, s
 	ctx->length += length;
 
 	if (ctx->outfd >= 0) {
-		size_t written = safe_write(ctx->outfd, data, length);
+		ptrdiff_t written = safe_write(ctx->outfd, data, length);
 
 		if (written == SAFE_WRITE_ERROR) {
 #if EAGAIN != EWOULDBLOCK
@@ -4201,6 +4206,9 @@ int http_send_request(const wget_iri *iri, const wget_iri *original_url, DOWNLOA
 
 wget_http_response *http_receive_response(wget_http_connection *conn)
 {
+	if (!conn)
+		return NULL;
+
 	wget_http_response *resp = wget_http_get_response_cb(conn);
 
 	if (!resp)
@@ -4218,7 +4226,9 @@ wget_http_response *http_receive_response(wget_http_connection *conn)
 			if (config.xattr && !terminate)
 				write_xattr_last_modified(resp->last_modified, context->outfd);
 
-			set_file_mtime(context->outfd, resp->last_modified - (terminate || resp->length_inconsistent));
+			// If requested, keep the local system timestamp rather than the server timestamp.
+			if (config.use_server_timestamps)
+				set_file_mtime(context->outfd, resp->last_modified - (terminate || resp->length_inconsistent));
 		}
 
 		if (config.fsync_policy) {
