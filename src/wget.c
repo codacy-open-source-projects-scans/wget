@@ -855,7 +855,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 
 	if (flags & URL_FLG_REDIRECTION) { // redirect
 		if (job && job->redirection_level >= config.max_redirect) {
-			info_printf("URL '%s' not followed (max redirections exceeded)\n", iri->safe_uri);
+			info_printf(_("URL '%s' not followed (max redirections exceeded)\n"), iri->safe_uri);
 			wget_iri_free(&iri);
 			return;
 		}
@@ -982,7 +982,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		// a new host entry has been created
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
-				info_printf("URL '%s' not followed (file already exists)\n", iri->safe_uri);
+				info_printf(_("URL '%s' not followed (file already exists)\n"), iri->safe_uri);
 			} else {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
@@ -1010,24 +1010,24 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		if ((config.accept_patterns && !in_pattern_list(config.accept_patterns, iri->uri))
 			|| (config.accept_regex && !regex_match(iri->uri, config.accept_regex)))
 		{
-			info_printf("URL '%s' not followed (doesn't match accept pattern)\n", iri->safe_uri);
+			info_printf(_("URL '%s' not followed (doesn't match accept pattern)\n"), iri->safe_uri);
 			goto out;
 		}
 
 		if ((config.reject_patterns && in_pattern_list(config.reject_patterns, iri->uri))
 			|| (config.reject_regex && regex_match(iri->uri, config.reject_regex)))
 		{
-			debug_printf("URL '%s' not followed (matches reject pattern)\n", iri->safe_uri);
+			info_printf(_("URL '%s' not followed (matches reject pattern)\n"), iri->safe_uri);
 			goto out;
 		}
 
 		if (config.exclude_directories && in_directory_pattern_list(config.exclude_directories, iri->path)) {
-			debug_printf("URL '%s' not followed (path excluded)\n", iri->safe_uri);
+			info_printf(_("URL '%s' not followed (path excluded)\n"), iri->safe_uri);
 			goto out;
 		}
 	}
 
-	wget_info_printf(_("Enqueue %s\n"), iri->safe_uri);
+	info_printf(_("Enqueue %s\n"), iri->safe_uri);
 
 	new_job = job_init(&job_buf, blacklistp, http_fallback);
 
@@ -1907,6 +1907,16 @@ static int process_response_header(wget_http_response *resp)
 
 		wget_cookie_normalize_cookies(job->iri, resp->cookies);
 		wget_cookie_store_cookies(config.cookie_db, resp->cookies);
+
+		wget_buffer uri_buf;
+		char uri_sbuf[1024];
+		wget_buffer_init(&uri_buf, uri_sbuf, sizeof(uri_sbuf));
+
+		wget_iri_relative_to_abs(iri, resp->location, (size_t) -1, &uri_buf);
+		if (uri_buf.length)
+			queue_url_from_remote(job, "utf-8", uri_buf.data, URL_FLG_REDIRECTION, NULL);
+
+		wget_buffer_deinit(&uri_buf);
 	}
 
 	return 0;
