@@ -25,7 +25,7 @@ CFLAGS=$CFLAGS
 LDFLAGS=$LDFLAGS
 
 AC_PREREQ([2.69])
-AC_INIT([wget2],[2.2.0],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
+AC_INIT([wget2],[2.2.1],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
 
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -77,8 +77,8 @@ LT_INIT([dlopen])
 # 4. If any interfaces have been added, removed, or changed since the last update, increment current, and set revision to 0.
 # 5. If any interfaces have been added since the last public release, then increment age.
 # 6. If any existing interfaces have been removed or changed since the last public release, then set age to 0.
-AC_SUBST([LIBWGET_SO_VERSION], [3:0:0])
-AC_SUBST([LIBWGET_VERSION], [2.2.0])
+AC_SUBST([LIBWGET_SO_VERSION], [4:0:0])
+AC_SUBST([LIBWGET_VERSION], [2.2.1])
 
 #
 # Generate version defines for include file
@@ -235,6 +235,7 @@ if test -n "$WARN_CFLAGS"; then
     GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-gnu-zero-variadic-macro-arguments -Wno-conditional-uninitialized"
     GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-comma -Wno-assign-enum -Wno-unreachable-code -Wno-error"
     GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-missing-field-initializers -Wno-used-but-marked-unused"
+    GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-implicit-void-ptr-cast -Wno-c++-keyword -Wno-pre-c11-compat -Wno-extra-semi-stmt"
 
     # remove all flags from GNULIB_WARN_FLAGS that are already in CFLAGS
     # wget_WORD_REMOVE([GNULIB_WARN_CFLAGS], [$GNULIB_WARN_CFLAGS], [$CFLAGS])
