@@ -176,7 +176,8 @@ static int on_data_chunk_recv_callback(nghttp2_session *session,
 		ctx->resp->req->first_response_start = wget_get_timemillis();
 
 		ctx->resp->cur_downloaded += len;
-		wget_decompress(ctx->decompressor, (char *) data, len);
+		if (wget_decompress(ctx->decompressor, (char *) data, len))
+			return NGHTTP2_ERR_CALLBACK_FAILURE;
 	}
 	return 0;
 }

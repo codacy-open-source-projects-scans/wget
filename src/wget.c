@@ -778,7 +778,7 @@ static void queue_url_from_local(const char *url, wget_iri *base, const char *en
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
 				debug_printf("not requesting '%s'. (Exclude Domains)\n", iri->safe_uri);
-			} else {
+			} else if (config.robots || config.follow_sitemaps) {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
 			}
@@ -865,7 +865,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 	plugin_db_forward_url(iri, &plugin_verdict);
 
 	if (plugin_verdict.reject) {
-		info_printf(_("URL '%s' no followed (plugin verdict)\n"), iri->safe_uri);
+		info_printf(_("URL '%s' not followed (plugin verdict)\n"), iri->safe_uri);
 		plugin_db_forward_url_verdict_free(&plugin_verdict);
 		wget_iri_free(&iri);
 		return;
@@ -983,7 +983,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		if (config.recursive) {
 			if (!config.clobber && blacklistp->local_filename && access(blacklistp->local_filename, F_OK) == 0) {
 				info_printf(_("URL '%s' not followed (file already exists)\n"), iri->safe_uri);
-			} else {
+			} else if (config.robots || config.follow_sitemaps) {
 				// create a special job for downloading robots.txt (before anything else)
 				host_add_robotstxt_job(host, iri, encoding, http_fallback);
 			}
@@ -1027,7 +1027,7 @@ static void queue_url_from_remote(JOB *job, const char *encoding, const char *ur
 		}
 	}
 
-	info_printf(_("Enqueue %s\n"), iri->safe_uri);
+	info_printf(_("Enqueuing %s\n"), iri->safe_uri);
 
 	new_job = job_init(&job_buf, blacklistp, http_fallback);
 
@@ -1461,11 +1461,13 @@ int main(int argc, const char **argv)
 		config.progress = PROGRESS_TYPE_NONE;
 	}
 
-	if (config.progress == PROGRESS_TYPE_BAR) {
+	if (config.progress != PROGRESS_TYPE_NONE) {
 		if (bar_init()) {
-			start_time = wget_get_timemillis();
-			if ((rc = wget_thread_start(&progress_thread, progress_report, NULL, 0)) != 0) {
-				error_printf(_("Failed to start progress report thread, error %d\n"), rc);
+			if (config.progress == PROGRESS_TYPE_BAR) {
+				start_time = wget_get_timemillis();
+				if ((rc = wget_thread_start(&progress_thread, progress_report, NULL, 0)) != 0) {
+					error_printf(_("Failed to start progress report thread, error %d\n"), rc);
+				}
 			}
 		}
 	}
@@ -1566,13 +1568,15 @@ int main(int argc, const char **argv)
  out:
 	if (is_testing() || wget_match_tail(argv[0], "wget2_noinstall")) {
 		// freeing to avoid disguising valgrind output
-		if ((rc = wget_thread_join(&progress_thread)) != 0)
-			error_printf(_("Failed to wait for progress thread (%d %d)\n"), rc, errno);
+		if (config.progress == PROGRESS_TYPE_BAR) {
+			if ((rc = wget_thread_join(&progress_thread)) != 0)
+				error_printf(_("Failed to wait for progress thread (%d %d)\n"), rc, errno);
+		}
 
 		blacklist_free();
 		hosts_free();
 		xfree(downloaders);
-		if (config.progress == PROGRESS_TYPE_BAR)
+		if (config.progress != PROGRESS_TYPE_NONE)
 			bar_deinit();
 		wget_vector_clear_nofree(parents);
 		wget_vector_free(&parents);
@@ -2210,11 +2214,11 @@ static void process_response(wget_http_response *resp)
 		}
 		if (job->metalink) {
 			if (job->metalink->size <= 0) {
-				error_printf(_("File length %llu - remove job\n"), (unsigned long long)job->metalink->size);
+				error_printf(_("File length %llu - removing job\n"), (unsigned long long)job->metalink->size);
 			} else if (!job->metalink->mirrors) {
-				error_printf(_("No download mirrors found - remove job\n"));
+				error_printf(_("No download mirrors found - removing job\n"));
 			} else if (!job->metalink->name || !*job->metalink->name) {
-				error_printf(_("Metalink file name is invalid, missing or empty - remove job\n"));
+				error_printf(_("Metalink file name is invalid, missing or empty - removing job\n"));
 			} else {
 				// just loaded a metalink description, create parts and sort mirrors
 
@@ -2222,7 +2226,7 @@ static void process_response(wget_http_response *resp)
 				if (!job_validate_file(job)) {
 					// Account for retries
 					if (config.tries && ++job->failures > config.tries) {
-						error_printf(_("Metalink validation failed: max tries reached - remove job\n"));
+						error_printf(_("Metalink validation failed: max tries reached - removing job\n"));
 						job->done = 1;
 					} else {
 						// sort mirrors by priority to download from highest priority first
@@ -3771,7 +3775,7 @@ static int get_header(wget_http_response *resp, void *context)
 //	info_printf("Opened %d\n", ctx->outfd);
 
 out:
-	if (config.progress == PROGRESS_TYPE_BAR) {
+	if (config.progress != PROGRESS_TYPE_NONE) {
 		const char *filename = NULL;
 
 		if (!name) {
@@ -3843,7 +3847,6 @@ static void limit_transfer_rate(struct body_callback_context *ctx, size_t read_b
 	ctx->limit_debt_bytes = (sleep_ms - elapsed_ms) * thread_rate_limit / 1000;
 }
 
-
 static int get_body(wget_http_response *resp, void *context, const char *data, size_t length)
 {
 	struct body_callback_context *ctx = (struct body_callback_context *)context;
@@ -3882,7 +3885,7 @@ static int get_body(wget_http_response *resp, void *context, const char *data, s
 	if (ctx->max_memory == 0 || ctx->length < ctx->max_memory)
 		wget_buffer_memcat(ctx->body, data, length); // append new data to body
 
-	if (config.progress == PROGRESS_TYPE_BAR) {
+	if (config.progress != PROGRESS_TYPE_NONE) {
 		bar_set_downloaded(ctx->progress_slot, resp->cur_downloaded - resp->accounted_for);
 		resp->accounted_for = resp->cur_downloaded;
 	}
@@ -4283,7 +4286,7 @@ wget_http_response *http_receive_response(wget_http_connection *conn)
 		context->outfd = -1;
 	}
 
-	if (config.progress == PROGRESS_TYPE_BAR)
+	if (config.progress != PROGRESS_TYPE_NONE)
 		bar_slot_deregister(context->progress_slot);
 
 	if (resp->length_inconsistent)

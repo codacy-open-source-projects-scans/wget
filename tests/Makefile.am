@@ -51,7 +51,7 @@ WGET_TESTS = test-wget-1$(EXEEXT) test-c-r$(EXEEXT) test-restrict-ascii$(EXEEXT)
  test-plugin-interception$(EXEEXT) test-plugin-nonexistance$(EXEEXT) test-plugin-failure$(EXEEXT) test-filter-mime-type$(EXEEXT)\
  test-https-enforce-hard1$(EXEEXT) test-https-enforce-hard2$(EXEEXT) test-https-enforce-hard3$(EXEEXT)\
  test-https-enforce-soft1$(EXEEXT) test-https-enforce-soft2$(EXEEXT) test-https-enforce-soft3$(EXEEXT)\
- test-gzip$(EXEEXT) test-compression$(EXEEXT) test-include-and-exclude-directories$(EXEEXT) test-save-content-on$(EXEEXT)\
+ test-gzip$(EXEEXT) test-broken-gzip$(EXEEXT) test-compression$(EXEEXT) test-include-and-exclude-directories$(EXEEXT) test-save-content-on$(EXEEXT)\
  test-limit-rate$(EXEEXT) test-interrupt-response$(EXEEXT) test-post-handshake-auth$(EXEEXT) test-unlink$(EXEEXT)\
  test-ocsp-server$(EXEEXT) test-ocsp-stap$(EXEEXT) test-limit-rate-http2$(EXEEXT) test-timestamping$(EXEEXT)\
  test-cookies$(EXEEXT) test-E-k$(EXEEXT) test-ignore-length$(EXEEXT) test-convert-file-only$(EXEEXT)\
