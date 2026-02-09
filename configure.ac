@@ -21,13 +21,10 @@ m4_pattern_forbid([^_?AX_])
 m4_pattern_allow([AX_CHECK_GNU_MAKE_HEADLINE])
 m4_pattern_allow([_AX_CODE_COVERAGE_GCOV_PROG_WITH])
 
-CFLAGS=$CFLAGS
-LDFLAGS=$LDFLAGS
-
-AC_PREREQ([2.69])
+AC_PREREQ([2.71])
 AC_INIT([wget2],[2.2.1],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
 
-AC_CONFIG_MACRO_DIR([m4])
+AC_CONFIG_MACRO_DIRS([m4])
 AC_CONFIG_AUX_DIR([build-aux])
 
 AM_INIT_AUTOMAKE([subdir-objects parallel-tests gnu -Wno-portability dist-lzip])
@@ -37,25 +34,23 @@ case $host_os in
   linux*)
     ;;
   mingw*)
-    XTRA_CFLAGS="-Wno-attributes -fno-PIC"
+    AM_CFLAGS="-Wno-attributes -fno-PIC"
 #    XTRA_LIBS=-lws2_32
     ;;
   cygwin*)
-    XTRA_CFLAGS="-Wno-char-subscripts -fno-PIC"
+    AM_CFLAGS="-Wno-char-subscripts -fno-PIC"
     ;;
 #  *)
 #    AC_MSG_ERROR([$host_os is not currently supported])
 #    ;;
 esac
 
-# Append EXTRA_CFLAGS to CFLAGS, if defined.
-test -n "$EXTRA_CFLAGS" && CFLAGS="$CFLAGS $EXTRA_CFLAGS"
-test -n "$XTRA_CFLAGS" && CFLAGS="$CFLAGS $XTRA_CFLAGS"
+AC_SUBST([AM_CFLAGS])
 
 AC_USE_SYSTEM_EXTENSIONS
 AC_PROG_CC
-if test "$ac_cv_prog_cc_c99" = "no"; then
-  AC_MSG_ERROR(Compiler does not support C99. Aborting.)
+if test "x$ac_cv_prog_cc_c11" = "xno"; then
+  AC_MSG_ERROR([C11 compiler is required. Aborting.])
 fi
 
 gl_EARLY
@@ -133,8 +128,8 @@ if test -n "$WARN_CFLAGS"; then
     nw="$nw -Wabi" # gcc 8, very noisy
     nw="$nw -Wunused-macros" # triggers in auto-generated lex css parser, #pragma doesn't work, conflicts with -Werror
     nw="$nw -Wchkp" # gcc-9 says: not supported any more (but emits it via -Q --help=C)"
-    nw="$nw -Wc90-c99-compat" # gcc-12, we use C99
-    nw="$nw -Wlong-long" # gcc-12, we use C99
+    nw="$nw -Wc90-c99-compat" # gcc-12, we use C11
+    nw="$nw -Wlong-long" # gcc-12, we use C11
     nw="$nw -Wstrict-flex-arrays" # gcc-13 warns about it
     nw="$nw -Wuseless-cast" # gcc-14 warns about it (pretty useless for portable code)
     nw="$nw -Wc99-c11-compat" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
@@ -405,7 +400,7 @@ if test "${ENABLE_XATTR}" = "yes" ; then
   fi
 fi
 
-test "${ENABLE_XATTR}" = "yes" && AC_DEFINE([ENABLE_XATTR], 1,
+test "${ENABLE_XATTR}" = "yes" && AC_DEFINE([ENABLE_XATTR], [1],
     [Define if you want file meta-data storing into POSIX Extended Attributes compiled in.])
 
 #
@@ -531,11 +526,12 @@ AS_IF([test "$with_ssl" = "gnutls" || test "$with_ssl" = "yes"], [
   PKG_CHECK_MODULES([GNUTLS], [gnutls], [
     with_gnutls=yes
     with_gnutls_in_testsuite=yes
-    LIBS="$GNUTLS_LIBS $LIBS"
-    CFLAGS="$GNUTLS_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_GNUTLS], [1], [Use GnuTLS])
     AC_DEFINE([WITH_GNUTLS_IN_TESTSUITE], [1], [GnuTLS is available for test suite.])
-    AC_SEARCH_LIBS(gnutls_hash, gnutls, [with_gnutls_hash=yes])
+    save_LIBS=$LIBS
+    LIBS="$GNUTLS_LIBS $LIBS"
+    AC_CHECK_FUNC(gnutls_hash, [with_gnutls_hash=yes])
+    LIBS=$save_LIBS
     AS_IF([test "$with_gnutls_hash" = "yes"],
       [AC_CHECK_HEADERS([gnutls/crypto.h], [], [], [#include <gnutls/gnutls.h>])])
     AC_CHECK_HEADERS([gnutls/ocsp.h],
@@ -550,15 +546,13 @@ AS_IF([test "$with_ssl" = "gnutls" || test "$with_ssl" = "yes"], [
       [with_gnutls=yes],
       [AC_MSG_WARN(*** GNUTLS was not found. Fallback to libnettle for hashing and checksumming.)])
     GNUTLS_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 
 AS_IF([test "$with_ssl" = "openssl" || (test "$with_ssl" = "yes" && test "$with_gnutls" != "yes")], [
   PKG_CHECK_MODULES([OPENSSL], [openssl], [
     with_openssl=yes
-    LIBS="$OPENSSL_LIBS $LIBS"
-    CFLAGS="$OPENSSL_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_OPENSSL], [1], [Use OpenSSL])
   ], [
     OLD_LIBS="$LIBS"
@@ -568,7 +562,7 @@ AS_IF([test "$with_ssl" = "openssl" || (test "$with_ssl" = "yes" && test "$with_
       [AC_MSG_WARN(*** OpenSSL was not found.)
     ])
     OPENSSL_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 
   AS_IF([test "$with_openssl" = "yes"], [
@@ -580,18 +574,19 @@ AS_IF([test "$with_ssl" = "openssl" || (test "$with_ssl" = "yes" && test "$with_
 
     AC_CHECK_FUNCS(SSL_new X509_STORE_add_lookup)
 
-    AC_SEARCH_LIBS(EVP_MD_CTX_new, crypto,
+    save_LIBS=$LIBS
+    LIBS="$OPENSSL_LIBS $LIBS"
+    AC_CHECK_FUNC(EVP_MD_CTX_new,
       [with_libcrypto=yes; AC_DEFINE([WITH_LIBCRYPTO], [1], [Use libcrypto])],
       [with_libcrypto=no; AC_MSG_WARN(*** LIBCRYPTO was not found. Fallback to libwolfcrypt for hashing and checksumming.)
     ])
+    LIBS=$save_LIBS
   ])
 ])
 
 AS_IF([test "$with_ssl" = "wolfssl" || (test "$with_ssl" = "yes" && test "$with_gnutls" != "yes" && test "$with_openssl" != "yes")], [
   PKG_CHECK_MODULES([WOLFSSL], [wolfssl], [
     with_wolfssl=yes
-    LIBS="$WOLFSSL_LIBS $LIBS"
-    CFLAGS="$WOLFSSL_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_WOLFSSL], [1], [Use WolfSSL])
   ], [
     OLD_LIBS="$LIBS"
@@ -600,7 +595,7 @@ AS_IF([test "$with_ssl" = "wolfssl" || (test "$with_ssl" = "yes" && test "$with_
       [with_wolfssl=yes; AC_DEFINE([WITH_WOLFSSL], [1], [Use WolfSSL])],
       [AC_MSG_WARN(*** WolfSSL was not found.)])
     WOLFSSL_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 
   AS_IF([test "$with_wolfssl" = "yes"], [
@@ -618,7 +613,7 @@ AS_IF([test "$with_gnutls" = "yes" || test "$with_wolfssl" = "yes" || test "$wit
         [ssl_enabled="(not found)"])
 ], [
   AS_IF([test "$with_ssl" != "none"], [
-    AS_IF([test "$with_ssl" = "yes"], [AC_MSG_ERROR([*** No SSL/TLS library not found.])],
+    AS_IF([test "$with_ssl" = "yes"], [AC_MSG_ERROR([*** No SSL/TLS library found.])],
           [AC_MSG_ERROR([*** SSL/TLS library "$with_ssl" not found.])])
   ])
   ssl_enabled="none"
@@ -640,8 +635,6 @@ AM_CONDITIONAL([WITH_TLS], [test "$with_gnutls" = "yes" || test "$with_wolfssl" 
 AS_IF([(test "$with_gnutls" != "yes" || test "$with_gnutls_hash" != "yes") && test "$with_libwolfcrypt" != "yes" && test "$with_libcrypto" != "yes"], [
   PKG_CHECK_MODULES([NETTLE], nettle, [
     with_libnettle=yes
-    LIBS="$NETTLE_LIBS $LIBS"
-    CFLAGS="$NETTLE_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBNETTLE], [1], [Use libnettle])
   ], [
      with_libnettle=no
@@ -649,11 +642,16 @@ AS_IF([(test "$with_gnutls" != "yes" || test "$with_gnutls_hash" != "yes") && te
   ])
 
   AS_IF([test "$with_libnettle" != "yes"], [
+    OLD_LIBS="$LIBS"
+    LIBS=
     AC_SEARCH_LIBS(gcry_check_version, gcrypt,
       [with_gcrypt=yes; AC_DEFINE([WITH_GCRYPT], [1], [Use libgcrypt]) AC_CHECK_HEADERS([gcrypt.h])],
       [with_gcrypt=no;  AC_MSG_WARN(*** LIBGCRYPT was not found. Fallback to gnulib for hashing and checksumming.)])
+    GCRYPT_LIBS="$LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
+AC_SUBST([GCRYPT_LIBS])
 
 AM_CONDITIONAL([WITH_LIBNETTLE], [test "$with_libnettle" = "yes"])
 AM_CONDITIONAL([WITH_CRYPT], [test "$with_gcrypt" = "yes"])
@@ -662,8 +660,6 @@ AC_ARG_WITH(libdane, AS_HELP_STRING([--without-libdane], [enable support for DAN
 AS_IF([test "$with_libdane" != "no"], [
   PKG_CHECK_MODULES([LIBDANE], [gnutls-dane >= 3.0.0], [
     with_libdane=yes
-    LIBS="$LIBDANE_LIBS $LIBS"
-    CFLAGS="$LIBDANE_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBDANE], [1], [DANE support enabled])
   ], [
     OLD_LIBS="$LIBS"
@@ -672,7 +668,7 @@ AS_IF([test "$with_libdane" != "no"], [
       [with_libdane=yes; AC_DEFINE([WITH_LIBDANE], [1], [DANE support enabled])],
       [with_libdane=no;  AC_MSG_WARN(*** libgnutls-dane was not found.)])
     LIBDANE_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LIBDANE], [test "$with_libdane" = "yes"])
@@ -683,8 +679,6 @@ AS_IF([test "$with_libpsl" != "no"], [
     with_libpsl=yes
     # correct $LIBPSL_LIBS (in libpsl <= 0.6.0)
     AS_IF([test "$LIBPSL_LIBS" = "-llibpsl "], [LIBPSL_LIBS="-lpsl"])
-    LIBS="$LIBPSL_LIBS $LIBS"
-    CFLAGS="$LIBPSL_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBPSL], [1], [PSL support enabled])
   ], [
     OLD_LIBS="$LIBS"
@@ -693,7 +687,7 @@ AS_IF([test "$with_libpsl" != "no"], [
       [with_libpsl=yes; AC_DEFINE([WITH_LIBPSL], [1], [PSL support enabled])],
       [with_libpsl=no;  AC_MSG_WARN(*** libpsl was not found. Fallback to builtin cookie checking.)])
     LIBPSL_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LIBPSL], [test "$with_libpsl" = "yes"])
@@ -702,8 +696,6 @@ AC_ARG_WITH(libhsts, AS_HELP_STRING([--without-libhsts], [disable support for li
 AS_IF([test "$with_libhsts" != "no"], [
   PKG_CHECK_MODULES([LIBHSTS], libhsts, [
     with_libhsts=yes
-    LIBS="$LIBHSTS_LIBS $LIBS"
-    CFLAGS="$LIBHSTS_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBHSTS], [1], [HSTS Preload List support enabled])
   ], [
     OLD_LIBS="$LIBS"
@@ -712,7 +704,7 @@ AS_IF([test "$with_libhsts" != "no"], [
       [with_libhsts=yes; AC_DEFINE([WITH_LIBHSTS], [1], [HSTS Preload List support enabled])],
       [with_libhsts=no;  AC_MSG_WARN(*** libhsts was not found.)])
     LIBHSTS_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LIBHSTS], [test "$with_libHSTS" = "yes"])
@@ -721,8 +713,6 @@ AC_ARG_WITH(libnghttp2, AS_HELP_STRING([--without-libnghttp2], [disable support 
 AS_IF([test "$with_libnghttp2" != "no"], [
   PKG_CHECK_MODULES([LIBNGHTTP2], libnghttp2, [
     with_libnghttp2=yes
-    LIBS="$LIBNGHTTP2_LIBS $LIBS"
-    CFLAGS="$LIBNGHTTP2_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBNGHTTP2], [1], [HTTP/2.0 support enabled via libnghttp2])
   ], [
     OLD_LIBS="$LIBS"
@@ -731,7 +721,7 @@ AS_IF([test "$with_libnghttp2" != "no"], [
       [with_libnghttp2=yes; AC_DEFINE([WITH_LIBNGHTTP2], [1], [HTTP/2.0 support enabled via libnghttp2])],
       [with_libnghttp2=no;  AC_MSG_WARN(*** libnghttp2 was not found. HTTP/2.0 support disabled.)])
     LIBNGHTTP2_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LIBNGHTTP2], [test "$with_libnghttp2" = "yes"])
@@ -740,15 +730,11 @@ AC_ARG_WITH(gpgme, AS_HELP_STRING([--without-gpgme], [support signature verifica
 AS_IF([test "$with_gpgme" != "no"], [
   PKG_CHECK_MODULES([GPGME], gpgme, [
     with_gpgme=yes
-    LIBS="$GPGME_LIBS $LIBS"
-    CFLAGS="$GPGME_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_GPGME], [1], [Use gpgme])
   ], [
     m4_ifdef([AM_PATH_GPGME],[
       AM_PATH_GPGME([], [
         with_gpgme=yes
-        LIBS="$GPGME_LIBS $LIBS"
-        CFLAGS="$GPGME_CFLAGS $CFLAGS"
         AC_DEFINE([WITH_GPGME], [1], [Use gpgme])
       ],[
         with_gpgme=no; AC_MSG_WARN(*** GPGME not found.)
@@ -768,16 +754,16 @@ AS_IF([test "$with_bzip2" = "yes"], [
     [with_bzip2=yes; AC_DEFINE([WITH_BZIP2], [1], [Use libbz2])],
     [with_bzip2=no;  AC_MSG_WARN(*** libbz2 was not found. You will not be able to use BZIP2 (de)compression)])
   BZ2_LIBS="$LIBS"
-  LIBS="$LIBS $OLD_LIBS"
+  LIBS="$OLD_LIBS"
 ])
+AC_SUBST([BZ2_LIBS])
+AC_SUBST([BZ2_CFLAGS])
 AM_CONDITIONAL([WITH_BZIP2], [test "$with_bzip2" = "yes"])
 
 AC_ARG_WITH(zlib, AS_HELP_STRING([--without-zlib], [disable gzip compression support]), with_zlib=$withval, with_zlib=yes)
 AS_IF([test "$with_zlib" != "no"], [
   PKG_CHECK_MODULES([ZLIB], zlib, [
     with_zlib=yes
-    LIBS="$ZLIB_LIBS $LIBS"
-    CFLAGS="$ZLIB_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_ZLIB], [1], [Use zlib])
   ], [
     OLD_LIBS="$LIBS"
@@ -786,7 +772,7 @@ AS_IF([test "$with_zlib" != "no"], [
       [with_zlib=yes; AC_DEFINE([WITH_ZLIB], [1], [Use zlib])],
       [with_zlib=no;  AC_MSG_WARN(*** ZLIB was not found. You will not be able to use gzip (de)compression)])
     ZLIB_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_ZLIB], [test "$with_zlib" = "yes"])
@@ -795,8 +781,6 @@ AC_ARG_WITH(lzma, AS_HELP_STRING([--with-lzma], [enable LZMA compression support
 AS_IF([test "$with_lzma" = "yes"], [
   PKG_CHECK_MODULES([LZMA], liblzma, [
     with_lzma=yes
-    LIBS="$LZMA_LIBS $LIBS"
-    CFLAGS="$LZMA_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LZMA], [1], [Use liblzma])
   ], [
     OLD_LIBS="$LIBS"
@@ -805,7 +789,7 @@ AS_IF([test "$with_lzma" = "yes"], [
       [with_lzma=yes; AC_DEFINE([WITH_LZMA], [1], [Use liblzma])],
       [with_lzma=no;  AC_MSG_WARN(*** liblzma was not found. You will not be able to use LZMA (de)compression)])
     LZMA_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LZMA], [test "$with_lzma" = "yes"])
@@ -814,8 +798,6 @@ AC_ARG_WITH(brotlidec, AS_HELP_STRING([--without-brotlidec], [disable Brotli com
 AS_IF([test "$with_brotlidec" != "no"], [
   PKG_CHECK_MODULES([BROTLIDEC], libbrotlidec, [
     with_brotlidec=yes
-    LIBS="$BROTLIDEC_LIBS $LIBS"
-    CFLAGS="$BROTLIDEC_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_BROTLIDEC], [1], [Use brotlidec])
   ], [
     OLD_LIBS="$LIBS"
@@ -824,7 +806,7 @@ AS_IF([test "$with_brotlidec" != "no"], [
       [with_brotlidec=yes; AC_DEFINE([WITH_BROTLIDEC], [1], [Use libbrotlidec])],
       [with_brotlidec=no;  AC_MSG_WARN(*** libbrotlidec was not found. You will not be able to use Brotli decompression)])
     BROTLIDEC_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_BROTLIDEC], [test "$with_brotlidec" = "yes"])
@@ -833,8 +815,6 @@ AC_ARG_WITH(zstd, AS_HELP_STRING([--without-zstd], [disable Zstandard compressio
 AS_IF([test "$with_zstd" != "no"], [
   PKG_CHECK_MODULES([ZSTD], libzstd, [
     with_zstd=yes
-    LIBS="$ZSTD_LIBS $LIBS"
-    CFLAGS="$ZSTD_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_ZSTD], [1], [Use zstd])
   ], [
     OLD_LIBS="$LIBS"
@@ -843,7 +823,7 @@ AS_IF([test "$with_zstd" != "no"], [
       [with_zstd=yes; AC_DEFINE([WITH_ZSTD], [1], [Use libzstd])],
       [with_zstd=no;  AC_MSG_WARN(*** libzstd was not found. You will not be able to use Zstandard decompression)])
     ZSTD_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_ZSTD], [test "$with_zstd" = "yes"])
@@ -852,8 +832,6 @@ AC_ARG_WITH(lzip, AS_HELP_STRING([--without-lzip], [disable lzip compression sup
 AS_IF([test "$with_lzip" != "no"], [
   PKG_CHECK_MODULES([LZIP], liblz, [
     with_lzip=yes
-    LIBS="$LZIP_LIBS $LIBS"
-    CFLAGS="$LZIP_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LZIP], [1], [Use liblz (lzip)])
   ], [
     OLD_LIBS="$LIBS"
@@ -862,7 +840,7 @@ AS_IF([test "$with_lzip" != "no"], [
       [with_lzip=yes; AC_DEFINE([WITH_LZIP], [1], [Use liblz (lzip)])],
       [with_lzip=no;  AC_MSG_WARN(*** liblz was not found. You will not be able to use lzip decompression)])
     LZIP_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LZIP], [test "$with_lzip" = "yes"])
@@ -878,8 +856,6 @@ AS_IF([test "$with_libidn2" != "no"], [
   PKG_CHECK_MODULES([LIBIDN2], [libidn2 >= 0.14.0], [
     with_libidn2=yes
     IDNA_INFO="IDNA 2008 (libidn2)"
-    LIBS="$LIBIDN2_LIBS $LIBS"
-    CFLAGS="$LIBIDN2_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBIDN2], [1], [Use libidn2])
   ], [
     with_libidn2=no
@@ -894,8 +870,6 @@ AS_IF([test "$with_libidn2" != "yes"], [
   AS_IF([test "$with_libidn" != "no"], [
     PKG_CHECK_MODULES([LIBIDN], libidn, [
       with_libidn=yes
-      LIBS="$LIBIDN_LIBS $LIBS"
-      CFLAGS="$LIBIDN_CFLAGS $CFLAGS"
       AC_DEFINE([WITH_LIBIDN], [1], [Use libidn])
       IDNA_INFO="IDNA 2003 (libidn)"
     ], [
@@ -905,7 +879,7 @@ AS_IF([test "$with_libidn2" != "yes"], [
         [with_libidn=yes; AC_DEFINE([WITH_LIBIDN], [1], [Use libidn]) IDNA_INFO="IDNA 2003 (libidn)"],
         [with_libidn=no;  AC_MSG_WARN(*** LIBIDN was not found. You will not be able to use IDN support)])
       LIBIDN_LIBS="$LIBS"
-      LIBS="$LIBS $OLD_LIBS"
+      LIBS="$OLD_LIBS"
     ])
   ])
 ])
@@ -915,8 +889,6 @@ AC_ARG_WITH(libpcre2, AS_HELP_STRING([--without-libpcre2], [disable support for 
 AS_IF([test "$with_libpcre2" != "no"], [
   PKG_CHECK_MODULES([LIBPCRE2], libpcre2-8, [
     with_libpcre2=yes
-    LIBS="$LIBPCRE2_LIBS $LIBS"
-    CFLAGS="$LIBPCRE2_CFLAGS $CFLAGS"
     AC_DEFINE([WITH_LIBPCRE2], [1], [PCRE regex support enabled via libpcre2])
   ], [
     OLD_LIBS="$LIBS"
@@ -925,7 +897,7 @@ AS_IF([test "$with_libpcre2" != "no"], [
       [with_libpcre2=yes; AC_DEFINE([WITH_LIBPCRE2], [1], [PCRE regex support enabled via libpcre2])],
       [with_libpcre2=no;  AC_MSG_WARN(*** libpcre2 was not found. PCRE2 regex support disabled.)])
     LIBPCRE2_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
   ])
 ])
 AM_CONDITIONAL([WITH_LIBPCRE2], [test "$with_libpcre2" = "yes"])
@@ -935,8 +907,6 @@ AS_IF([test "$with_libpcre2" != "yes"], [
  AS_IF([test "$with_libpcre" != "no"], [
    PKG_CHECK_MODULES([LIBPCRE], libpcre, [
      with_libpcre=yes
-     LIBS="$LIBPCRE_LIBS $LIBS"
-     CFLAGS="$LIBPCRE_CFLAGS $CFLAGS"
      AC_DEFINE([WITH_LIBPCRE], [1], [PCRE regex support enabled via libpcre])
    ], [
     OLD_LIBS="$LIBS"
@@ -945,7 +915,7 @@ AS_IF([test "$with_libpcre2" != "yes"], [
        [with_libpcre=yes; AC_DEFINE([WITH_LIBPCRE], [1], [PCRE regex support enabled via libpcre])],
        [with_libpcre=no;  AC_MSG_WARN(*** libpcre was not found. PCRE regex support disabled.)])
     LIBPCRE_LIBS="$LIBS"
-    LIBS="$LIBS $OLD_LIBS"
+    LIBS="$OLD_LIBS"
    ])
  ])
 ])
@@ -962,8 +932,6 @@ AS_IF([test "$with_libmicrohttpd" != "no"], [
     TEST_LIBS="$MICROHTTPD_LIBS $TEST_LIBS"
     TEST_CFLAGS="$MICROHTTPD_CFLAGS $TEST_CFLAGS"
     AC_DEFINE([WITH_MICROHTTPD], [1], [Use Libmicrohttpd])
-    LIBS="$MICROHTTPD_LIBS $LIBS"
-    CFLAGS="$MICROHTTPD_CFLAGS $CFLAGS"
     AC_CHECK_FUNCS(MHD_free)
     AC_CHECK_HEADERS([microhttpd_http2.h])
     LIBS=$old_LIBS
@@ -1015,8 +983,6 @@ AC_ARG_ENABLE(libproxy,
 AS_IF([test "${enable_libproxy}" = "yes"], [
   with_libproxy=yes
   PKG_CHECK_MODULES([LIBPROXY], [libproxy-1.0], [
-    LIBS="$LIBPROXY_LIBS $LIBS"
-    CFLAGS="$LIBPROXY_CFLAGS $CFLAGS"
     AC_DEFINE([HAVE_LIBPROXY], [1], [Define if using libproxy.])
   ])
 ])

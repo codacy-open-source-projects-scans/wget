@@ -942,15 +942,22 @@ static int verify_certificate_callback(gnutls_session_t session)
 	/* This verification function uses the trusted CAs in the credentials
 	 * structure. So you must have installed one or more CA certificates.
 	 */
-	if (gnutls_certificate_verify_peers3(session, hostname, &status) != GNUTLS_E_SUCCESS) {
-//		if (wget_get_logger(WGET_LOGGER_DEBUG))
-//			_print_info(session);
+	gnutls_typed_vdata_st data[] = {
+		{
+			.type = GNUTLS_DT_DNS_HOSTNAME,
+			.data = (void *) hostname,
+		},
+		{
+			.type = GNUTLS_DT_KEY_PURPOSE_OID,
+			.data = (void *) GNUTLS_KP_TLS_WWW_SERVER,
+		}
+	};
+	unsigned elements = config.check_certificate ? countof(data) : 1;
+
+	if (gnutls_certificate_verify_peers(session, data, elements, &status) != GNUTLS_E_SUCCESS) {
 		error_printf_check(_("%s: Certificate verification error\n"), tag);
 		goto out;
 	}
-
-//	if (wget_get_logger(WGET_LOGGER_DEBUG))
-//		_print_info(session);
 
 #ifdef WITH_OCSP
 	if (status & GNUTLS_CERT_REVOKED) {
@@ -1036,14 +1043,6 @@ static int verify_certificate_callback(gnutls_session_t session)
 	if ((err = gnutls_x509_crt_import(cert, &cert_list[0], GNUTLS_X509_FMT_DER)) != GNUTLS_E_SUCCESS) {
 		error_printf_check(_("%s: Failed to parse certificate: %s\n"), tag, gnutls_strerror (err));
 		goto out;
-	}
-
-	if (config.check_certificate) {
-		int rc;
-		if ((rc = gnutls_x509_crt_check_key_purpose(cert, GNUTLS_KP_TLS_WWW_SERVER, 0)) == 0) {
-			error_printf_check(_("%s: The certificate is not authorized for server authentication.\n"), tag);
-			goto out;
-		}
 	}
 
 	if (!config.check_hostname || (config.check_hostname && hostname && gnutls_x509_crt_check_hostname(cert, hostname)))
@@ -1341,42 +1340,31 @@ void wget_ssl_init(void)
 
 		debug_printf("Certificates loaded: %d\n", ncerts);
 
-		if (config.secure_protocol) {
-			const char *priorities = NULL;
-
-			if (!wget_strcasecmp_ascii(config.secure_protocol, "PFS")) {
-				priorities = "PFS:-VERS-SSL3.0";
-				// -RSA to force DHE/ECDHE key exchanges to have Perfect Forward Secrecy (PFS))
-				if ((rc = gnutls_priority_init(&priority_cache, priorities, NULL)) != GNUTLS_E_SUCCESS) {
-					priorities = "NORMAL:-RSA:-VERS-SSL3.0";
-					rc = gnutls_priority_init(&priority_cache, priorities, NULL);
-				}
-			} else {
-#define TLS13_PRIO ":+VERS-TLS1.3"
-				if (!wget_strncasecmp_ascii(config.secure_protocol, "SSL", 3))
-					priorities = "NORMAL:-VERS-TLS-ALL:+VERS-SSL3.0";
-				else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1"))
-					priorities = "NORMAL:-VERS-SSL3.0" TLS13_PRIO;
-				else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_1"))
-					priorities = "NORMAL:-VERS-SSL3.0:-VERS-TLS1.0" TLS13_PRIO;
-				else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_2"))
-					priorities = "NORMAL:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1" TLS13_PRIO;
-				else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_3"))
-					priorities = "NORMAL:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-TLS1.2" TLS13_PRIO;
-				else if (!wget_strcasecmp_ascii(config.secure_protocol, "auto")) {
-					/* use system default, priorities = NULL */
-				} else if (*config.secure_protocol)
-					priorities = config.secure_protocol;
-#undef TLS13_PRIO
-				rc = gnutls_priority_init(&priority_cache, priorities, NULL);
-			}
-
-			if (rc != GNUTLS_E_SUCCESS)
-				error_printf(_("GnuTLS: Unsupported priority string '%s': %s\n"), priorities ? priorities : "(null)", gnutls_strerror(rc));
-		} else {
+		if (!config.secure_protocol || !wget_strcasecmp_ascii(config.secure_protocol, "auto")) {
 			// use GnuTLS defaults, which might hold insecure ciphers
 			if ((rc = gnutls_priority_init(&priority_cache, NULL, NULL)))
 				error_printf(_("GnuTLS: Unsupported default priority 'NULL': %s\n"), gnutls_strerror(rc));
+		} else {
+			const char *priorities = NULL;
+
+			if (!wget_strcasecmp_ascii(config.secure_protocol, "PFS"))
+				priorities = "PFS:-RSA:-VERS-SSL3.0";
+			else if (!wget_strncasecmp_ascii(config.secure_protocol, "SSL", 3))
+				priorities = "-VERS-TLS-ALL:+VERS-SSL3.0"; // SSLv3 only
+			else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1"))
+				priorities = "-VERS-SSL3.0";
+			else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_1"))
+				priorities = "-VERS-SSL3.0:-VERS-TLS1.0";
+			else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_2"))
+				priorities = "-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1";
+			else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_3"))
+				priorities = "-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-TLS1.2:+VERS-TLS1.3";
+			else if (*config.secure_protocol)
+				priorities = config.secure_protocol; // user-defined priorities
+
+			rc = gnutls_priority_init2(&priority_cache, priorities, NULL, GNUTLS_PRIORITY_INIT_DEF_APPEND);
+			if (rc != GNUTLS_E_SUCCESS)
+				error_printf(_("GnuTLS: Unsupported priority string '%s': %s\n"), priorities ? priorities : "(null)", gnutls_strerror(rc));
 		}
 
 		init++;
