@@ -2,33 +2,7 @@ DEFS = @DEFS@ \
  -DSRCDIR=\"$(abs_srcdir)\" -DBUILDDIR=\"$(abs_builddir)\" -DEXEEXT=\"$(EXEEXT)\"
 
 MYLIBS = \
- $(CLOCK_TIME_LIB) \
- $(GETADDRINFO_LIB) \
- $(GETHOSTNAME_LIB) \
- $(GETLOGIN_LIB) \
- $(GETRANDOM_LIB) \
- $(HARD_LOCALE_LIB) \
- $(HOSTENT_LIB) \
- $(INET_NTOP_LIB) \
- $(INET_PTON_LIB) \
- $(LIBMULTITHREAD) \
- $(LIBSOCKET) \
- $(LIBTHREAD) \
- $(LIB_CRYPTO) \
- $(LTLIBC32CONV) \
- $(LTLIBICONV) \
- $(LTLIBINTL) \
- $(LTLIBUNISTRING) \
- $(MBRTOWC_LIB) \
- $(NANOSLEEP_LIB) \
- $(POLL_LIB) \
- $(POSIX_SPAWN_LIB) \
- $(PTHREAD_SIGMASK_LIB) \
- $(SELECT_LIB) \
- $(SERVENT_LIB) \
- $(SETLOCALE_LIB) \
- $(SETLOCALE_NULL_LIB) \
- @INTL_MACOSX_LIBS@ \
+ $(GNULIB_LIBS) \
  $(LIBS) $(CODE_COVERAGE_LIBS)
 
 AM_CFLAGS = $(WERROR_CFLAGS) $(WARN_CFLAGS) $(TEST_CFLAGS) $(CODE_COVERAGE_CFLAGS) -DMALLOC_RETURNS_NONNULL
@@ -92,7 +66,7 @@ libtest_la_LIBADD = ../src/libtest-utils.la ../lib/libgnu.la ../libwget/libwget.
 EXTRA_DIST = certs gpg valgrind-suppressions clang-asan-suppressions
 
 clean-local:
-	rm -rf $(srcdir)/.test_*
+	$(AM_V_at)rm -rf $(srcdir)/.test_*
 
 AM_TESTS_ENVIRONMENT = export VALGRIND_TESTS"=@VALGRIND_TESTS@";\
  export LSAN_OPTIONS=suppressions="$(abs_srcdir)/clang-asan-suppressions";
