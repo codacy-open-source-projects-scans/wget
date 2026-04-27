@@ -27,7 +27,8 @@ AC_INIT([wget2],[2.2.1],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/pro
 AC_CONFIG_MACRO_DIRS([m4])
 AC_CONFIG_AUX_DIR([build-aux])
 
-AM_INIT_AUTOMAKE([subdir-objects parallel-tests gnu -Wno-portability dist-lzip])
+AM_INIT_AUTOMAKE([subdir-objects parallel-tests gnu -Wno-portability dist-lzip silent-rules])
+AM_SILENT_RULES([yes]) # set default to 'make V=0'
 
 AC_CANONICAL_HOST
 case $host_os in
@@ -48,10 +49,17 @@ esac
 AC_SUBST([AM_CFLAGS])
 
 AC_USE_SYSTEM_EXTENSIONS
+
+# Check for large file support.  This check needs to come fairly
+# early because it could (in principle) affect whether functions and
+# headers are available, whether they work, etc.
+AC_SYS_LARGEFILE
+AC_CHECK_SIZEOF(off_t)
+
 AC_PROG_CC
-if test "x$ac_cv_prog_cc_c11" = "xno"; then
+AS_IF([test "x$ac_cv_prog_cc_c11" = "xno"], [
   AC_MSG_ERROR([C11 compiler is required. Aborting.])
-fi
+])
 
 gl_EARLY
 gl_INIT
@@ -87,15 +95,6 @@ AC_CONFIG_FILES([include/wget/wgetver.h])
 AC_CONFIG_SRCDIR([src/wget.c])
 AC_CONFIG_HEADERS([config.h])
 
-# Non-verbose make
-m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
-
-# Check for large file support.  This check needs to come fairly
-# early because it could (in principle) affect whether functions and
-# headers are available, whether they work, etc.
-AC_SYS_LARGEFILE
-AC_CHECK_SIZEOF(off_t)
-
 # Checks for programs.
 
 AC_PROG_LEX([noyywrap])
@@ -109,8 +108,8 @@ AC_PROG_LN_S
 # disable explicitly: ./configure --disable-manywarnings
 wget_MANYWARNINGS(WARN_CFLAGS, C)
 
-if test -n "$WARN_CFLAGS"; then
-  if test "$CCNAME" = "gcc"; then
+AS_IF([test -n "$WARN_CFLAGS"], [
+  AS_IF([test "$CCNAME" = "gcc"], [
     # Set up list of unwanted warnings
     nw=
     nw="$nw -Wsystem-headers"       # System headers may trigger lot's of useless warnings
@@ -138,23 +137,23 @@ if test -n "$WARN_CFLAGS"; then
     nw="$nw -Wpedantic" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
     nw="$nw -Wundef" # comes with latest gnulib (01.11.2024) generated config.h and gcc 14.2.0
 
-    if test "$cross_compiling" = yes; then
+    AS_IF([test "$cross_compiling" = yes], [
       nw="$nw -Wformat"
-    fi
+    ])
 
     # remove unwanted warn flags
     wget_WORD_REMOVE([WARN_CFLAGS], [$WARN_CFLAGS], [$nw])
 
     # add more flags as you like
-    if test $GCC_VERSION -ge 5; then
+    AS_IF([test $GCC_VERSION -ge 5], [
       WARN_CFLAGS="$WARN_CFLAGS -fdiagnostics-color=always"
-    fi
-    if test "$cross_compiling" = yes; then
+    ])
+    AS_IF([test "$cross_compiling" = yes], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-format"
-    fi
-    if test $GCC_VERSION -ge 8; then
+    ])
+    AS_IF([test $GCC_VERSION -ge 8]; [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-cast-function-type"
-    fi
+    ])
     # WARN_CFLAGS="$WARN_CFLAGS -Werror"
 
     # We use a slightly smaller set of warning options for lib/.
@@ -182,11 +181,11 @@ if test -n "$WARN_CFLAGS"; then
     GNULIB_WARN_CFLAGS="-Wno-error $GNULIB_WARN_CFLAGS"
     GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-sign-compare -Wno-unused-parameter -Wno-alloca"
     GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-float-conversion -Wno-cast-function-type -Wno-vla"
-    if test "$cross_compiling" = yes; then
+    AS_IF([test "$cross_compiling" = yes], [
       GNULIB_WARN_CFLAGS="$GNULIB_WARN_CFLAGS -Wno-incompatible-pointer-types"
-    fi
+    ])
 
-  elif test "$CCNAME" = "clang"; then
+   ], [test "$CCNAME" = "clang"], [
     # setup flags for this project
     WARN_CFLAGS="$WARN_CFLAGS -Wno-system-headers -Wno-cast-qual -Wno-padded"
     WARN_CFLAGS="$WARN_CFLAGS -Wno-reserved-id-macro -Wno-sign-conversion  -Wno-disabled-macro-expansion"
@@ -196,25 +195,25 @@ if test -n "$WARN_CFLAGS"; then
     WARN_CFLAGS="$WARN_CFLAGS -Wno-nullability-extension -Wno-nullability-completeness"
 
     CLANG_VERSION=$($CC -dumpversion | cut -f1 -d.)
-    if test $CLANG_VERSION -ge 11; then
+    AS_IF([test $CLANG_VERSION -ge 11], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-implicit-int-float-conversion"
-    fi
+    ])
 
-    if test $CLANG_VERSION -ge 12; then
+    AS_IF([test $CLANG_VERSION -ge 12], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-string-concatenation"
-    fi
+    ])
 
-    if test $CLANG_VERSION -ge 13; then
+    AS_IF([test $CLANG_VERSION -ge 13], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-reserved-identifier"
-    fi
+    ])
 
-    if test $CLANG_VERSION -ge 14; then
+    AS_IF([test $CLANG_VERSION -ge 14], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-declaration-after-statement"
-    fi
+    ])
 
-    if test $CLANG_VERSION -ge 16; then
+    AS_IF([test $CLANG_VERSION -ge 16], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-unsafe-buffer-usage -Wno-cast-function-type-strict"
-    fi
+    ])
 
     # remove all flags from WARN_FLAGS that are already in CFLAGS
     # wget_WORD_REMOVE([WARN_CFLAGS], [$WARN_CFLAGS], [$CFLAGS])
@@ -234,12 +233,12 @@ if test -n "$WARN_CFLAGS"; then
 
     # remove all flags from GNULIB_WARN_FLAGS that are already in CFLAGS
     # wget_WORD_REMOVE([GNULIB_WARN_CFLAGS], [$GNULIB_WARN_CFLAGS], [$CFLAGS])
-  fi
+  ])
 
   AC_SUBST([MANYWARNINGS], [-DWGET_MANYWARNINGS])
   AC_SUBST([WARN_CFLAGS])
   AC_SUBST([GNULIB_WARN_CFLAGS])
-fi
+])
 
 AC_ARG_ENABLE([manylibs],
   [AS_HELP_STRING([--enable-manylibs], [Generate small libraries of libwget functionality groups])],
@@ -268,23 +267,23 @@ AC_ARG_ENABLE([fsanitize-tsan],
   [gl_cc_sanitize_tsan=yes], [gl_cc_sanitize_tsan=no])
 
 
-if test "$gl_cc_sanitize_asan" = yes; then
-  if test "$gl_cc_sanitize_msan" = yes; then
+AS_IF([test "$gl_cc_sanitize_asan" = yes], [
+  AS_IF([test "$gl_cc_sanitize_msan" = yes], [
     AC_MSG_ERROR([Address Sanitizer and Memory Sanitizer are mutually exclusive])
-  elif test "$gl_cc_sanitize_tsan" = yes; then
+  ], [test "$gl_cc_sanitize_tsan" = yes], [
     AC_MSG_ERROR([Address Sanitizer and Thread Sanitizer are mutually exclusive])
-  fi
-fi
+  ])
+])
 
 
-if test "$gl_cc_sanitize_msan" = yes; then
-  if test "$gl_cc_sanitize_tsan" = yes; then
+AS_IF([test "$gl_cc_sanitize_msan" = yes], [
+  AS_IF([test "$gl_cc_sanitize_tsan" = yes], [
     AC_MSG_ERROR([Memory Sanitizer and Thread Sanitizer are mutually exclusive])
-  fi
-fi
+  ])
+])
 
 
-if test "$gl_cc_sanitize_ubsan" = yes; then
+AS_IF([test "$gl_cc_sanitize_ubsan" = yes], [
   gl_WARN_ADD([-fsanitize=undefined])
   gl_WARN_ADD([-fno-sanitize=function]) # Disabled: too many false positives with function pointer casts
   gl_WARN_ADD([-fsanitize=bool])
@@ -295,7 +294,7 @@ if test "$gl_cc_sanitize_ubsan" = yes; then
   gl_WARN_ADD([-fsanitize=float-divide-by-zero])
 
   # additional clang options, from OSS-Fuzz (20.12.2019)
-  if test "$CCNAME" = "clang"; then
+  AS_IF([test "$CCNAME" = "clang"], [
     gl_WARN_ADD([-fsanitize=integer])
     gl_WARN_ADD([-fsanitize=array-bounds])
     gl_WARN_ADD([-fsanitize=builtin])
@@ -314,14 +313,14 @@ if test "$gl_cc_sanitize_ubsan" = yes; then
     gl_WARN_ADD([-fsanitize=implicit-conversion])
     gl_WARN_ADD([-fsanitize=local-bounds])
     gl_WARN_ADD([-fsanitize=nullability])
-  fi
+  ])
 
-  if test "$CCNAME" = "gcc"; then
+  AS_IF([test "$CCNAME" = "gcc"], [
     gl_WARN_ADD([-fsanitize=float-cast-overflow])
-  fi
-fi
+  ])
+])
 
-if test "$gl_cc_sanitize_asan" = yes; then
+AS_IF([test "$gl_cc_sanitize_asan" = yes], [
   gl_WARN_ADD([-fsanitize=address])
   gl_WARN_ADD([-fsanitize=leak])
   gl_WARN_ADD([-fno-omit-frame-pointer])
@@ -330,34 +329,34 @@ if test "$gl_cc_sanitize_asan" = yes; then
   # additional clang option
   gl_WARN_ADD([-fsanitize-address-use-after-scope])
 
-  if test "$CCNAME" = "gcc"; then
+  AS_IF([test "$CCNAME" = "gcc"], [
     gl_WARN_ADD([-fsanitize=pointer-subtract])
-  fi
-fi
+  ])
+])
 
-if test "$gl_cc_sanitize_ubsan" = yes || test "$gl_cc_sanitize_asan" = yes; then
+AS_IF([test "$gl_cc_sanitize_ubsan" = yes || test "$gl_cc_sanitize_asan" = yes], [
   gl_WARN_ADD([-fno-sanitize-recover=all])
   gl_WARN_ADD([-fsanitize-recover=unsigned-integer-overflow])
-fi
+])
 
-if test "$gl_cc_sanitize_msan" = yes; then
+AS_IF([test "$gl_cc_sanitize_msan" = yes], [
   # clang options
   gl_WARN_ADD([-fsanitize=memory])
   gl_WARN_ADD([-fsanitize-memory-track-origins])
 
   # gcc options
-  if test "$CCNAME" = "gcc"; then
+  AS_IF([test "$CCNAME" = "gcc"], [
     gl_WARN_ADD([-fsanitize=leak])
-  fi
+  ])
 
   gl_WARN_ADD([-fno-omit-frame-pointer])
   gl_WARN_ADD([-fno-optimize-sibling-calls])
   gl_WARN_ADD([-fPIE])
-fi
+])
 
-if test "$gl_cc_sanitize_tsan" = yes; then
+AS_IF([test "$gl_cc_sanitize_tsan" = yes], [
   gl_WARN_ADD([-fsanitize=thread -fPIC -pie])
-fi
+])
 
 #
 # Assertions
@@ -376,7 +375,7 @@ AC_ARG_ENABLE([xattr],
   [ENABLE_XATTR=$enableval; xattr_requested=$enableval],
   [ENABLE_XATTR=yes])
 
-if test "${ENABLE_XATTR}" = "yes" ; then
+AS_IF([test "${ENABLE_XATTR}" = "yes"], [
   case "$host_os" in
     *linux* | *darwin*)
       AC_CHECK_FUNCS([fsetxattr], [], [
@@ -395,10 +394,10 @@ if test "${ENABLE_XATTR}" = "yes" ; then
       ENABLE_XATTR=no
   esac
 
-  if test "$ENABLE_XATTR" = "no" && test "$xattr_requested" = "yes"; then
+  AS_IF([test "$ENABLE_XATTR" = "no" && test "$xattr_requested" = "yes"], [
     AC_MSG_ERROR([Extended Attributes (xattr) have been requested but are not available.])
-  fi
-fi
+  ])
+])
 
 test "${ENABLE_XATTR}" = "yes" && AC_DEFINE([ENABLE_XATTR], [1],
     [Define if you want file meta-data storing into POSIX Extended Attributes compiled in.])
@@ -424,30 +423,30 @@ AM_CONDITIONAL([HAVE_PO], [ test "$have_po" = "yes" ])
 #
 AC_ARG_ENABLE(doc, AS_HELP_STRING([--disable-doc], [don t generate any documentation]),
   enable_doc=$enableval, enable_doc=yes)
-if test "$enable_doc" = yes; then
+AS_IF([test "$enable_doc" = yes], [
   AC_CHECK_PROGS([DOXYGEN], [doxygen])
   AC_CHECK_PROGS([PANDOC], [pandoc])
 
-  if test -n "$DOXYGEN" || test -n "$PANDOC"; then
+  AS_IF([test -n "$DOXYGEN" || test -n "$PANDOC"], [
     DOCS_INFO="yes"
     LIBWGET_DOCS_INFO="yes (found:"
-    if test -n "$DOXYGEN"; then
+    AS_IF([test -n "$DOXYGEN"], [
       LIBWGET_DOCS_INFO="$LIBWGET_DOCS_INFO $DOXYGEN)"
-    else
+    ], [
       LIBWGET_DOCS_INFO="no"
-    fi
+    ])
     WGET2_DOCS_INFO="yes (found:"
-    if test -n "$PANDOC"; then
+    AS_IF([test -n "$PANDOC"], [
       WGET2_DOCS_INFO="$WGET2_DOCS_INFO $PANDOC)"
-    else
+    ], [
       WGET2_DOCS_INFO="no"
-    fi
-  else
+    ])
+  ], [
     DOCS_INFO="no (neither Doxygen nor Pandoc found)"
-  fi
-else
+  ])
+], [
   DOCS_INFO="no (disabled)"
-fi
+])
 AM_CONDITIONAL([WITH_DOCS], [ test -n "$DOXYGEN" || test -n "$PANDOC" ])
 AM_CONDITIONAL([WITH_DOXYGEN], [ test -n "$DOXYGEN" ])
 AM_CONDITIONAL([WITH_PANDOC], [ test -n "$PANDOC" ])
@@ -455,8 +454,6 @@ AM_CONDITIONAL([WITH_PANDOC], [ test -n "$PANDOC" ])
 #
 # enable creation of man pages
 #
-#AC_ARG_ENABLE(man,[AS_HELP_STRING([--enable-man],
-#                                  [generate man pages [default=auto]])],enable_man=yes,enable_man=no)
 
 #AM_CONDITIONAL(ENABLE_MAN, test "$enable_man" != "no")
 #AC_MSG_CHECKING([whether to generate man pages])
@@ -488,15 +485,15 @@ AS_IF([test "${ac_enable_valgrind}" != "no"], [
 ])
 
 
-if test "$VALGRIND_TESTS" = 1; then
-  if test "$gl_cc_sanitize_asan" = yes; then
+AS_IF([test "$VALGRIND_TESTS" = 1], [
+  AS_IF([test "$gl_cc_sanitize_asan" = yes], [
     AC_MSG_ERROR([Valgrind and Address Sanitizer are mutually exclusive])
-  elif test "$gl_cc_sanitize_msan" = yes; then
+  ], [test "$gl_cc_sanitize_msan" = yes], [
     AC_MSG_ERROR([Valgrind and Memory Sanitizer are mutually exclusive])
-  elif test "$gl_cc_sanitize_tsan" = yes; then
+  ], [test "$gl_cc_sanitize_tsan" = yes], [
     AC_MSG_ERROR([Valgrind and Thread Sanitizer are mutually exclusive])
-  fi
-fi
+  ])
+])
 
 # check for pandoc (documentation converter)
 
@@ -619,13 +616,6 @@ AS_IF([test "$with_gnutls" = "yes" || test "$with_wolfssl" = "yes" || test "$wit
   ssl_enabled="none"
 ])
 
-#AS_IF([test "$with_gnutls" != "yes" && test "$with_openssl" != "yes" && test "$with_wolfssl" != "yes"], [
-#  AS_IF([test "$with_ssl" != "none"], [
-#    AC_MSG_ERROR([*** Unsupported value for --with-ssl. Use 'gnutls' (default), 'openssl', 'wolfssl' or 'none'])
-#  ])
-#  ssl_enabled="(not found)"
-#])
-
 AM_CONDITIONAL([WITH_GNUTLS], [test "$with_gnutls" = "yes"])
 AM_CONDITIONAL([WITH_OPENSSL], [test "$with_openssl" = "yes"])
 AM_CONDITIONAL([WITH_WOLFSSL], [test "$with_wolfssl" = "yes"])
@@ -707,7 +697,7 @@ AS_IF([test "$with_libhsts" != "no"], [
     LIBS="$OLD_LIBS"
   ])
 ])
-AM_CONDITIONAL([WITH_LIBHSTS], [test "$with_libHSTS" = "yes"])
+AM_CONDITIONAL([WITH_LIBHSTS], [test "$with_libhsts" = "yes"])
 
 AC_ARG_WITH(libnghttp2, AS_HELP_STRING([--without-libnghttp2], [disable support for libnghttp2]), with_libnghttp2=$withval, with_libnghttp2=yes)
 AS_IF([test "$with_libnghttp2" != "no"], [
@@ -989,7 +979,6 @@ AS_IF([test "${enable_libproxy}" = "yes"], [
 
 
 # Check for plugin support
-AC_CANONICAL_HOST
 case "$host_os" in
 	mingw*)
 		dl_impl="windows";
@@ -1007,28 +996,28 @@ AC_ARG_WITH(plugin_support,
 		[plugin_support="$withval"],
 		[plugin_support="yes"])
 FUZZ_LIBS=$LIBS
-if test "$plugin_support" = "no"; then
+AS_IF([test "$plugin_support" = "no"], [
 	OLD_LIBS=$LIBS
 	AC_SEARCH_LIBS([dlsym], [dl dld])
 	FUZZ_LIBS=$LIBS
 	LIBS=$OLD_LIBS
-elif test "$dl_impl" = "libdl"; then
+], [test "$dl_impl" = "libdl"], [
 	AC_SEARCH_LIBS([dlsym], [dl ldl], [:], [dl_impl="none"])
 	FUZZ_LIBS=$LIBS
-fi
+])
 AC_SUBST([FUZZ_LIBS])
-if test "$plugin_support" = "yes" && test "$dl_impl" = "none"; then
+AS_IF([test "$plugin_support" = "yes" && test "$dl_impl" = "none"], [
 	AC_MSG_WARN(*** No working backend for plugin support found)
 	plugin_support="no"
-fi
-if test "$plugin_support" = "yes"; then
+])
+AS_IF([test "$plugin_support" = "yes"], [
 	AC_DEFINE([PLUGIN_SUPPORT], [1], [Enable plugin support])
-	if test "$dl_impl" = "windows"; then
+	AS_IF([test "$dl_impl" = "windows"], [
 		AC_DEFINE([PLUGIN_SUPPORT_WINDOWS], [1], [Use windows API for plugins])
-	else
+  ], [
 		AC_DEFINE([PLUGIN_SUPPORT_LIBDL], [1], [Use libdl for plugins])
-	fi
-fi
+  ])
+])
 AM_CONDITIONAL([PLUGIN_SUPPORT], [test "$plugin_support" = "yes"])
 
 AC_SUBST([TEST_CFLAGS])
