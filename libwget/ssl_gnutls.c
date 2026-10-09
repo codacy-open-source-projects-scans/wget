@@ -112,12 +112,12 @@ static struct config {
 		ocsp_nonce : 1,
 		dane : 1;
 } config = {
-	.check_certificate = 1,
-	.report_invalid_cert = 1,
-	.check_hostname = 1,
+	.check_certificate = true,
+	.report_invalid_cert = true,
+	.check_hostname = true,
 #ifdef WITH_OCSP
-	.ocsp = 0,
-	.ocsp_stapling = 1,
+	.ocsp = false,
+	.ocsp_stapling = true,
 #endif
 	.ca_type = WGET_SSL_X509_FMT_PEM,
 	.cert_type = WGET_SSL_X509_FMT_PEM,
@@ -293,18 +293,18 @@ void wget_ssl_set_config_object(int key, void *value)
 void wget_ssl_set_config_int(int key, int value)
 {
 	switch (key) {
-	case WGET_SSL_CHECK_CERTIFICATE: config.check_certificate = (char)value; break;
-	case WGET_SSL_REPORT_INVALID_CERT: config.report_invalid_cert = (char)value; break;
-	case WGET_SSL_CHECK_HOSTNAME: config.check_hostname = (char)value; break;
+	case WGET_SSL_CHECK_CERTIFICATE: config.check_certificate = !!value; break;
+	case WGET_SSL_REPORT_INVALID_CERT: config.report_invalid_cert = !!value; break;
+	case WGET_SSL_CHECK_HOSTNAME: config.check_hostname = !!value; break;
 	case WGET_SSL_CA_TYPE: config.ca_type = (char)value; break;
 	case WGET_SSL_CERT_TYPE: config.cert_type = (char)value; break;
-	case WGET_SSL_DANE: config.dane = (char)value; break;
+	case WGET_SSL_DANE: config.dane = !!value; break;
 	case WGET_SSL_KEY_TYPE: config.key_type = (char)value; break;
-	case WGET_SSL_PRINT_INFO: config.print_info = (char)value; break;
-	case WGET_SSL_OCSP: config.ocsp = (char)value; break;
-	case WGET_SSL_OCSP_DATE: config.ocsp_date = (char)value; break;
-	case WGET_SSL_OCSP_STAPLING: config.ocsp_stapling = (char)value; break;
-	case WGET_SSL_OCSP_NONCE: config.ocsp_nonce = value; break;
+	case WGET_SSL_PRINT_INFO: config.print_info = !!value; break;
+	case WGET_SSL_OCSP: config.ocsp = !!value; break;
+	case WGET_SSL_OCSP_DATE: config.ocsp_date = !!value; break;
+	case WGET_SSL_OCSP_STAPLING: config.ocsp_stapling = !!value; break;
+	case WGET_SSL_OCSP_NONCE: config.ocsp_nonce = !!value; break;
 	default: error_printf(_("Unknown config key %d (or value must not be an integer)\n"), key);
 	}
 }
@@ -360,7 +360,7 @@ static void print_x509_certificate_info(gnutls_session_t session)
 			expired = gnutls_x509_crt_get_expiration_time(cert);
 			info_printf(_("  Expires: %s"), safe_ctime(expired, timebuf, sizeof(timebuf)));
 
-			if (!gnutls_fingerprint(GNUTLS_DIG_MD5, &cert_list[ncert], digest, &digest_size)) {
+			if (!gnutls_fingerprint(GNUTLS_DIG_SHA256, &cert_list[ncert], digest, &digest_size)) {
 				char digest_hex[sizeof(digest) * 2 + 1];
 
 				wget_memtohex(digest, digest_size, digest_hex, sizeof(digest_hex));
@@ -599,7 +599,7 @@ static int send_ocsp_request(const char *server,
 		server = wget_strmemdup((char *)data.data, data.size);
 		server_allocated = 1;
 
-		xfree(data.data);
+		gnutls_free(data.data);
 	}
 
 	iri = wget_iri_parse(server, NULL);
@@ -624,7 +624,7 @@ static int send_ocsp_request(const char *server,
 	if (wget_http_open(&conn, iri) == WGET_E_SUCCESS) {
 		wget_http_request_set_body(req, "application/ocsp-request", wget_memdup(body.data, body.size), body.size);
 		req->debug_skip_body = 1;
-		if (wget_http_send_request(conn, req) == 0) {
+		if (wget_http_send_request(conn, &req) == WGET_E_SUCCESS) {
 			wget_http_response *resp;
 
 			if ((resp = wget_http_get_response(conn))) {
@@ -927,7 +927,7 @@ static int verify_certificate_callback(gnutls_session_t session)
 	unsigned int status, deinit_cert = 0, deinit_issuer = 0;
 	const gnutls_datum_t *cert_list = NULL;
 	unsigned int cert_list_size;
-	int ret = -1, err, ocsp_ok = 0, pinning_ok = 0;
+	int ret = -1, err, ocsp_ok = 0;
 	gnutls_x509_crt_t cert = NULL, issuer = NULL;
 	const char *tag = config.check_certificate ? _("ERROR") : _("WARNING");
 #ifdef WITH_OCSP
@@ -1045,10 +1045,12 @@ static int verify_certificate_callback(gnutls_session_t session)
 		goto out;
 	}
 
-	if (!config.check_hostname || (config.check_hostname && hostname && gnutls_x509_crt_check_hostname(cert, hostname)))
-		ret = 0;
-	else
-		goto out;
+	if (config.check_hostname) {
+		if (!hostname || !gnutls_x509_crt_check_hostname(cert, hostname)) {
+			error_printf_check(_("%s: Hostname mismatch or missing\n"), tag);
+			goto out; // Fail immediately
+		}
+	}
 
 	// At this point, the cert chain has been found valid regarding the locally available CA certificates and CRLs.
 	// Now, we are going to check the revocation status via OCSP
@@ -1083,13 +1085,13 @@ static int verify_certificate_callback(gnutls_session_t session)
 
 		if ((err = gnutls_x509_crt_import(cert, &cert_list[it], GNUTLS_X509_FMT_DER)) != GNUTLS_E_SUCCESS) {
 			error_printf_check(_("%s: Failed to parse certificate[%u]: %s\n"), tag, it, gnutls_strerror (err));
-			continue;
+			goto out;
 		}
 
-		if (cert_verify_hpkp(cert, hostname, session) == 0)
-			pinning_ok = 1;
-
-		cert_verify_hpkp(cert, hostname, session);
+		if (cert_verify_hpkp(cert, hostname, session) != 0) {
+			error_printf_check(_("%s: Pubkey pinning mismatch!\n"), tag);
+			goto out;
+		}
 
 #ifdef WITH_OCSP
 		if (!config.ocsp || (skip_server_cert_check && it == 0))
@@ -1120,11 +1122,11 @@ static int verify_certificate_callback(gnutls_session_t session)
 			deinit_issuer = 1;
 			if ((err = gnutls_x509_crt_import(issuer, &cert_list[it + 1], GNUTLS_X509_FMT_DER))  != GNUTLS_E_SUCCESS) {
 				debug_printf("Decoding error: %s\n", gnutls_strerror(err));
-				continue;
+				goto out;
 			}
 		} else if (err  != GNUTLS_E_SUCCESS) {
 			debug_printf("Cannot find issuer: %s\n", gnutls_strerror(err));
-			continue;
+			goto out;
 		}
 
 		ocsp_ok = cert_verify_ocsp(cert, issuer);
@@ -1162,15 +1164,12 @@ static int verify_certificate_callback(gnutls_session_t session)
 			wget_ocsp_db_add_host(config.ocsp_cert_cache, hostname, time(NULL) + 3600); // 1h valid
 		} else if (nrevoked) {
 			wget_ocsp_db_add_host(config.ocsp_cert_cache, hostname, 0); // remove entry from cache
-			ret = -1;
+			goto out;
 		}
 	}
 #endif
 
-	if (!pinning_ok) {
-		error_printf_check(_("%s: Pubkey pinning mismatch!\n"), tag);
-		ret = -1;
-	}
+	ret = 0;
 
 	// 0: continue handshake
 	// else: stop handshake

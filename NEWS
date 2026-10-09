@@ -6,6 +6,58 @@ See the end for copying conditions.
 
 Please send GNU Wget2 bug reports to <bug-wget@gnu.org>.
 
+21.09.2026 Release v2.3.0
+  * Fix combo of --page-requisites --no-parent --level 0 / --mirror
+  * Only continue existing regular files
+  * Fix --no-clobber
+  * Convert CSS files with --convert-links
+  * Add Content-Length: 0 to POST, PUT, PATCH, following RFC 9110
+  * Fix combining --domains with --span-hosts
+  * Fix --directory-prefix/-P to be wget1.x compatible
+  * Truncate file names if too long
+  * Fix URL unescaping to be Wget1 compatible
+  * Remove port from HSTS checking
+  * Fix https proxy authentication via CONNECT
+  * Do not unescape Location URLs
+  * Avoid integer overflow in cookie parsing
+  * Don't do robots exclusion if robots is switched off
+  * Port ANSI escape codes to OS/2
+  * Support dynamic loading on OS/2 (plugins)
+  * Use DOS-like path styles on OS/2
+  * Export symbols correctly on OS/2
+  * Set default paths for SSL credentials on OS/2
+  * Implement wget_get_screen_size on OS/2
+  * Do not assume that IPv6 support is available
+  * Don't send If-Modified-Since when resuming download
+  * Fix exit code after failed retries
+  * Fix for a stack overflow during recursive parsing of local files
+  * Support iframe srcdoc
+  * WolfSSL: Respect NO_OLD_TLS
+  * Parse HTML tags data-src and data-srcset
+  * Fix --waitretry
+  * Metalink: Sanitize Windows paths, prevent path traversal on Windows
+  * Limit max recursion depth of XML parsing to 1024
+  * Print headers without download via --spider -S
+  * Improve compatibility of --accept/--reject with wget1.x
+  * GnuTLS: Accept system settings
+  * OpenSSL: Support post handshake auth
+  * Fix --timeout, --connect-timeout and --read-timeout command line options
+  * Cleanup: Require GnuTLS >= 3.6.5
+  * Set exit code to 1 for no-op invocations of wget2
+  * Validate purpose of SSL/TLS certificates
+  * WolfSSL: Improve OCSP checks
+  * Improve path traversal prevention for Content-Disposition
+  * Sanitize filename from Content-Disposition
+  * Content-Disposition: Use basename as filename
+  * Only accept secure cookies from HTTPS
+  * WolfSSL: Enable domain check
+  * Continue bulk downloads with -i after error
+  * Implement 1xx response skipping for HTTP/2
+  * Don't fetch robots.txt with --no-robots and --no-follow-sitemaps
+  * Implement --progress=dot
+  * Fix several memory leaks
+  * Improve the build system, configuration, CI, docs, code
+
 30.12.2025 Release v2.2.1
   * Fix file overwrite issue with metalink
   * Fix remote buffer overflow in get_local_filename_real()

@@ -35,6 +35,8 @@ struct wget_http_connection_st {
 		esc_host;
 	wget_buffer *
 		buf;
+	char *
+		proxy_auth_header; /* Proxy-Authorization header value for CONNECT tunnel */
 #ifdef WITH_LIBNGHTTP2
 	nghttp2_session *
 		http2_session;
@@ -55,7 +57,8 @@ struct wget_http_connection_st {
 		print_response_headers : 1,
 		abort_indicator : 1,
 		proxied : 1,
-		goaway : 1;
+		goaway : 1,
+		need_connect : 1;
 };
 
 /* HTTP/1.0 status codes from RFC1945 */
@@ -92,8 +95,9 @@ int http_decompress_error_handler_cb(wget_decompressor *dc, int err);
 
 int wget_http2_open(wget_http_connection *conn);
 void wget_http2_close(wget_http_connection **conn);
-int wget_http2_send_request(wget_http_connection *conn, wget_http_request *req);
+int wget_http2_send_request(wget_http_connection *conn, wget_http_request **req);
 wget_http_response *wget_http2_get_response_cb(wget_http_connection *conn,
 					       wget_server_stats_callback *server_stats_callback);
+bool wget_http_method_defines_content(const char *method);
 
 #endif /* LIBWGET_HTTP_H */

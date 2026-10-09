@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <c-ctype.h>
+#include <xstrtol.h>
 #include <errno.h>
 #include <glob.h>
 #include <fcntl.h>
@@ -274,14 +275,20 @@ static int print_version(WGET_GCC_UNUSED option_t opt, WGET_GCC_UNUSED const cha
 
 static int parse_integer(option_t opt, const char *val, WGET_GCC_UNUSED const char invert)
 {
-	*((int *)opt->var) = val ? atoi(val) : 0;
+	long result = 0;
+	if (val)
+		xstrtol(val, NULL, 10, &result, NULL);
+	*((int *)opt->var) = result;
 
 	return 0;
 }
 
 static int parse_uint16(option_t opt, const char *val, WGET_GCC_UNUSED const char invert)
 {
-	int port = val ? atoi(val) : 0;
+	long result = 0;
+	if (val)
+		xstrtol(val, NULL, 10, &result, NULL);
+	long port = result;
 
 	if (port >= 0 && port <= UINT16_MAX) {
 		*((uint16_t *)opt->var) = (uint16_t) port;
@@ -413,7 +420,7 @@ static int parse_header(option_t opt, const char *val, WGET_GCC_UNUSED const cha
 	wget_vector *v = *((wget_vector **)opt->var);
 
 	if (val && *val) {
-		char *value, *delim_pos;
+		const char *value, *delim_pos;
 
 		if (!v) {
 			v = *((wget_vector **)opt->var) =
@@ -724,6 +731,11 @@ static int parse_mirror(option_t opt, const char *val, const char invert)
 static int parse_timeout(option_t opt, const char *val, WGET_GCC_UNUSED const char invert)
 {
 	double fval = -1;
+
+	if (!val || !*val) {
+		error_printf(_("Missing timeout value\n"));
+		return -1;
+	}
 
 	if (wget_strcasecmp_ascii(val, "INF") && wget_strcasecmp_ascii(val, "INFINITY")) {
 		char modifier = 0;
@@ -2034,7 +2046,7 @@ static const struct optionw options[] = {
 	{ "ocsp", &config.ocsp, parse_bool, -1, 0,
 		SECTION_SSL,
 		{ "Use OCSP server access to verify server's\n",
-		  "certificate. (default: on)\n"
+		  "certificate. (default: off)\n"
 		}
 	},
 	{ "ocsp-date", &config.ocsp_date, parse_bool, -1, 0,
@@ -2148,7 +2160,7 @@ static const struct optionw options[] = {
 	{ "progress", &config.progress, parse_progress_type, 1, 0,
 		SECTION_DOWNLOAD,
 		{ "Type of progress bar (bar, none).\n",
-		  "(default: none)\n"
+		  "(default: bar)\n"
 		}
 	},
 	{ "protocol-directories", &config.protocol_directories, parse_bool, -1, 0,
@@ -2359,7 +2371,7 @@ static const struct optionw options[] = {
 	},
 	{ "tcp-fastopen", &config.tcp_fastopen, parse_bool, -1, 0,
 		SECTION_DOWNLOAD,
-		{ "Enable TCP Fast Open (TFO). (default: on)\n"
+		{ "Enable TCP Fast Open (TFO). (default: off)\n"
 		}
 	},
 	{ "timeout", NULL, parse_timeout, 1, 'T',
@@ -2427,7 +2439,7 @@ static const struct optionw options[] = {
 	{ "user-agent", &config.user_agent, parse_string, 1, 'U',
 		SECTION_HTTP,
 		{ "HTTP User Agent string.\n",
-		  "(default: wget)\n"
+		  "(default: Wget/version)\n"
 		}
 	},
 	{ "verbose", &config.verbose, parse_bool, -1, 'v',
@@ -2459,7 +2471,7 @@ static const struct optionw options[] = {
 		  "(per thread). (default: 0)\n"
 		}
 	},
-	{ "waitretry", &config.waitretry, parse_timeout, 1, 0,
+	{ "waitretry", &config.waitretry, parse_timeout, 10, 0,
 		SECTION_DOWNLOAD,
 		{ "Wait up to number of seconds after error\n",
 		  "(per thread). (default: 10)\n"
@@ -2611,7 +2623,8 @@ static int WGET_GCC_NONNULL((1)) set_long_option(const char *name, const char *v
 {
 	option_t opt;
 	char invert = 0, value_present = 0, case_insensitive = 1;
-	char namebuf[sizeof(options[0].long_name) + 5], *p;
+	char namebuf[sizeof(options[0].long_name) + 5];
+	const char *p;
 	int ret = 0, rc;
 
 	if ((p = strchr(name, '='))) {
@@ -2814,6 +2827,14 @@ static int WGET_GCC_NONNULL((1)) read_config_expand(const char *cfgfile, int exp
 		level--;
 		return -2;
 	}
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+	// make it unlikely to scan large files, e.g. from /dev or /sys
+	if (strcmp(cfgfile, "d41d8cd98f00b204e9800998ecf8428e")) {
+		level--;
+		return -1;
+	}
+#endif
 
 	if (expand) {
 		glob_t globbuf = { .gl_pathc = 0 };
@@ -3176,6 +3197,12 @@ static int preload_dns_cache(const char *fname)
 	if (!strcmp(fname, "-") && !config.dont_write)
 		return scan_from_file(stdin);
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+	// Avoid reading from arbitrary files, can cause blocking.
+	// Instead use the config file from wget_options_fuzzer.
+	fname = "d41d8cd98f00b204e9800998ecf8428e";
+#endif
+
 	FILE *fp = fopen(fname, "r");
 	if (!fp) {
 		error_printf(_("Failed to open %s"), fname);
@@ -3460,7 +3487,7 @@ int init(int argc, const char **argv)
 		path = getenv("WGET2_PLUGIN_DIRS");
 		if (path) {
 			plugin_db_clear_search_paths();
-#ifdef _WIN32
+#if defined _WIN32 || defined __OS2__
 			plugin_db_add_search_paths(path, ';');
 #else
 			plugin_db_add_search_paths(path, ':');
@@ -3541,7 +3568,32 @@ int init(int argc, const char **argv)
 	debug_printf("Local URI encoding = '%s'\n", config.local_encoding);
 	debug_printf("Input URI encoding = '%s'\n", config.input_encoding);
 
-//Set environ proxy var only if a corresponding command-line proxy var isn't supplied
+	if (config.directory_prefix) {
+		char *resolved_path = NULL;
+
+		// If directory_prefix is an absolute path, don't prepend cwd
+		if (config.directory_prefix[0] == '/') {
+			resolved_path = wget_path_sanitize(config.directory_prefix);
+		} else {
+			char *cwd = getcwd(NULL, 0);
+			if (!cwd) {
+				error_printf_exit(_("Failed to get current directory\n"));
+			}
+			char *unresolved_path = wget_aprintf("%s/%s", cwd, config.directory_prefix);
+			xfree(cwd);
+			resolved_path = wget_path_sanitize(unresolved_path);
+			xfree(unresolved_path);
+		}
+
+		if (resolved_path) {
+			xfree(config.directory_prefix);
+			config.directory_prefix = resolved_path;
+		} else {
+			error_printf_exit(_("Failed to resolve directory prefix '%s' (%d, %s)\n"), config.directory_prefix, errno, strerror(errno));
+		}
+	}
+
+	// Set environ proxy var only if a corresponding command-line proxy var isn't supplied
 	if (config.proxy) {
 		if (!config.http_proxy)
 			config.http_proxy = wget_strdup(getenv("http_proxy"));

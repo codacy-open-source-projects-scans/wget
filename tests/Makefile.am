@@ -20,7 +20,7 @@ WGET_TESTS = test-wget-1$(EXEEXT) test-c-r$(EXEEXT) test-restrict-ascii$(EXEEXT)
  test-auth-basic$(EXEEXT) test-parse-rss$(EXEEXT) test-page-requisites$(EXEEXT) test-p-nc$(EXEEXT)\
  test-accept$(EXEEXT) test-k$(EXEEXT) test-k-percent-encoding$(EXEEXT) test-follow-tags$(EXEEXT) test-directory-clash$(EXEEXT) test-redirection$(EXEEXT) test-link-location$(EXEEXT)\
  test-base$(EXEEXT) test-metalink$(EXEEXT) test-robots$(EXEEXT) test-robots-off$(EXEEXT) test-parse-css$(EXEEXT) test-bad-chunk$(EXEEXT)\
- test-iri-subdir$(EXEEXT) test-chunked$(EXEEXT) test-cut-dirs$(EXEEXT) test-cut-get-vars$(EXEEXT) test-parse-html-css$(EXEEXT)\
+ test-iri-subdir$(EXEEXT) test-chunked$(EXEEXT) test-cut-dirs$(EXEEXT) test-cut-get-vars$(EXEEXT) test-parse-html-css$(EXEEXT) test-data-src$(EXEEXT)\
  test-auth-digest$(EXEEXT) test-stats-dns$(EXEEXT) test-stats-tls$(EXEEXT) test-stats-site$(EXEEXT) test-stats-ocsp$(EXEEXT)\
  test-plugin-interception$(EXEEXT) test-plugin-nonexistance$(EXEEXT) test-plugin-failure$(EXEEXT) test-filter-mime-type$(EXEEXT)\
  test-https-enforce-hard1$(EXEEXT) test-https-enforce-hard2$(EXEEXT) test-https-enforce-hard3$(EXEEXT)\
@@ -32,8 +32,10 @@ WGET_TESTS = test-wget-1$(EXEEXT) test-c-r$(EXEEXT) test-restrict-ascii$(EXEEXT)
  test-download-attr$(EXEEXT) test-directory-prefix$(EXEEXT) test-level$(EXEEXT)\
  test-http2-multiplexing$(EXEEXT) test-http2-stream-errors$(EXEEXT)\
  test-http2-connection-errors$(EXEEXT) test-http2-settings$(EXEEXT) \
- test-cert-key-usage$(EXEEXT)
-#test-post-file$(EXEEXT) test-cookies-http_state$(EXEEXT)
+ test-cert-key-usage$(EXEEXT) test-waitretry$(EXEEXT) \
+ test-connection-failure$(EXEEXT) test-span-hosts-domains$(EXEEXT)\
+ test-convert-links-css$(EXEEXT)
+#test-post-file$(EXEEXT)
 
 if WITH_GPGME
  WGET_TESTS += test-gpg-valid$(EXEEXT) test-gpg-invalid$(EXEEXT) test-gpg-missing$(EXEEXT) test-gpg-styles$(EXEEXT) test-gpg-bad$(EXEEXT) \
@@ -63,14 +65,22 @@ libtest_la_CPPFLAGS = -I$(srcdir) -I$(top_srcdir)/include/wget -I$(top_builddir)
  -DWGETVER_FILE=\"$(top_builddir)/include/wget/wgetver.h\" $(TEST_CFLAGS) $(GNUTLS_CFLAGS)
 libtest_la_LIBADD = ../src/libtest-utils.la ../lib/libgnu.la ../libwget/libwget.la $(MYLIBS) $(TEST_LIBS) $(GNUTLS_LIBS)
 
-EXTRA_DIST = certs gpg valgrind-suppressions clang-asan-suppressions
+EXTRA_DIST = certs gpg valgrind-suppressions clang-asan-suppressions \
+ test-https-proxy-auth-server.py test-https-proxy-auth.sh test-https-proxy.py
 
 clean-local:
 	$(AM_V_at)rm -rf $(srcdir)/.test_*
 
-AM_TESTS_ENVIRONMENT = export VALGRIND_TESTS"=@VALGRIND_TESTS@";\
- export LSAN_OPTIONS=suppressions="$(abs_srcdir)/clang-asan-suppressions";
-TESTS = $(WGET_TESTS)
+AM_TESTS_ENVIRONMENT = \
+    export VALGRIND_TESTS"=@VALGRIND_TESTS@"; \
+    export LSAN_OPTIONS=suppressions="$(abs_srcdir)/clang-asan-suppressions"; \
+	export SRCDIR="$(abs_srcdir)"; \
+	export BUILDDIR="$(top_builddir)";
+TESTS = $(WGET_TESTS) test-https-proxy-auth.sh
+
+if HAVE_PYTHON3
+ TESTS += test-https-proxy.py
+endif
 
 #Test plugins for plugin related testing
 dummy_ldflags = -avoid-version -module -shared -no-undefined \
@@ -110,3 +120,7 @@ libplugindb_la_SOURCES = test-plugin-dummy.c plugin_tests.h
 libplugindb_la_CPPFLAGS = $(AM_CPPFLAGS) -DTEST_SELECT_DATABASE
 libplugindb_la_LDFLAGS = $(dummy_ldflags)
 libplugindb_la_LIBADD = ../lib/libgnu.la ../libwget/libwget.la $(MYLIBS)
+
+test_span_hosts_domains_SOURCES = test-span-hosts-domains.c
+
+test_convert_links_css_SOURCES = test-convert-links-css.c

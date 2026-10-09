@@ -28,12 +28,20 @@
 
 const char *wget_ssl_default_cert_dir(void)
 {
+#ifndef __OS2__
 	return "/etc/ssl/certs";
+#else
+	return "/@unixroot/etc/ssl/certs";
+#endif
 }
 
 const char *wget_ssl_default_ca_bundle_path(void)
 {
+#ifndef __OS2__
 	return NULL;
+#else
+	return "/@unixroot/etc/ssl/cert.pem";
+#endif
 }
 
 #else // _WIN32
@@ -55,9 +63,12 @@ static const char *ssl_default_path(const char *base)
 
 	const char *progData = getenv("ProgramData");
 
+	if (!progData)
+		progData = "/ProgramData";
+
 	return wget_aprintf("%s%s%s%s",
-		progData ? progData : "/ProgramData",
-		ISSLASH(progData[strlen(progData - 1)]) ? "" : "/",
+		progData,
+		ISSLASH(progData[strlen(progData) - 1]) ? "" : "/",
 		"ssl/",
 		base);
 }

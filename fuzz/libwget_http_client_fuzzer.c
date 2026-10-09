@@ -27,6 +27,7 @@
 
 #include "wget.h"
 #include "fuzzer.h"
+#include "../libwget/http.h"
 
 static uint8_t *g_data;
 static size_t g_size;
@@ -93,6 +94,8 @@ void freeaddrinfo(struct addrinfo *res)
 
 #if defined __OpenBSD__ || defined __FreeBSD__
 int getnameinfo(const struct sockaddr *addr, socklen_t addrlen, char *host, size_t hostlen, char *serv, size_t servlen, int flags)
+#elif defined _AIX
+int getnameinfo(const struct sockaddr *addr, size_t addrlen, char *host, size_t hostlen, char *serv, size_t servlen, int flags)
 #else
 int getnameinfo(const struct sockaddr *addr, socklen_t addrlen, char *host, socklen_t hostlen, char *serv, socklen_t servlen, int flags)
 #endif
@@ -207,7 +210,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 			// wget_http_add_header(req, "User-Agent", "TheUserAgent/0.5");
 
 			if (wget_http_open(&conn, uri) == WGET_E_SUCCESS) {
-				if (wget_http_send_request(conn, req) == WGET_E_SUCCESS) {
+				if (wget_http_send_request(conn, &req) == WGET_E_SUCCESS) {
 					wget_http_response *resp = wget_http_get_response(conn);
 					wget_http_free_response(&resp);
 				}

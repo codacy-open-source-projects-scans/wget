@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <c-ctype.h>
+#include <xstrtol.h>
 #include <time.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -54,10 +55,10 @@
 
 #if defined __APPLE__ && defined __MACH__ && defined CONNECT_DATA_IDEMPOTENT && defined CONNECT_RESUME_ON_READ_WRITE
 # define TCP_FASTOPEN_OSX
-#elif defined TCP_FASTOPEN_CONNECT // since Linux 4.11
-# define TCP_FASTOPEN_LINUX_411
+#elif defined TCP_FASTOPEN_CONNECT && !defined TEST_LEGACY_TFO_API
+# define TCP_FASTOPEN_LINUX_411 // for Linux 4.11+: newer client API
 #elif defined TCP_FASTOPEN && defined MSG_FASTOPEN
-# define TCP_FASTOPEN_LINUX
+# define TCP_FASTOPEN_LINUX // for Linux 3.7+: legacy client API
 #endif
 
 #include <wget.h>
@@ -357,8 +358,12 @@ int wget_tcp_get_local_port(wget_tcp *tcp)
 	if (getsockname(tcp->sockfd, addr, &addr_len) == 0) {
 		char s_port[NI_MAXSERV];
 
-		if (getnameinfo(addr, addr_len, NULL, 0, s_port, sizeof(s_port), NI_NUMERICSERV) == 0)
-			return atoi(s_port);
+		if (getnameinfo(addr, addr_len, NULL, 0, s_port, sizeof(s_port), NI_NUMERICSERV) == 0) {
+			unsigned long val;
+			if (xstrtoul(s_port, NULL, 10, &val, NULL) != LONGINT_OK || val > UINT16_MAX)
+				val = 0;
+			return (int) val;
+		}
 	}
 
 	return 0;
@@ -432,7 +437,7 @@ void wget_tcp_set_bind_address(wget_tcp *tcp, const char *bind_address)
 
 		if (*s == '[') {
 			/* IPv6 address within brackets */
-			char *p = strrchr(s, ']');
+			const char *p = strrchr(s, ']');
 			if (p) {
 				host = s + 1;
 				s = p + 1;
@@ -454,7 +459,7 @@ void wget_tcp_set_bind_address(wget_tcp *tcp, const char *bind_address)
 			wget_strscpy(port, s + 1, sizeof(port));
 
 			if (c_isdigit(*port))
-				tcp->bind_addrinfo = wget_dns_resolve(tcp->dns, host, (uint16_t) atoi(port), tcp->family, tcp->preferred_family);
+				tcp->bind_addrinfo = wget_dns_resolve(tcp->dns, host, (uint16_t) ({ unsigned long val; xstrtoul(port, NULL, 10, &val, NULL) != LONGINT_OK || val > UINT16_MAX ? 0 : val; }), tcp->family, tcp->preferred_family);
 		} else {
 			tcp->bind_addrinfo = wget_dns_resolve(tcp->dns, host, 0, tcp->family, tcp->preferred_family);
 		}
@@ -988,11 +993,11 @@ ssize_t wget_tcp_write(wget_tcp *tcp, const char *buf, size_t count)
 				/* fallback from fastopen, e.g. when fastopen is disabled in system */
 				tcp->tcp_fastopen = 0;
 
-				set_socket_timeout(sockfd, tcp->connect_timeout);
+				set_socket_timeout(tcp->sockfd, tcp->connect_timeout);
 
 				int rc = connect(tcp->sockfd, tcp->connect_addrinfo->ai_addr, tcp->connect_addrinfo->ai_addrlen);
 
-				set_socket_timeout(sockfd, tcp->timeout);
+				set_socket_timeout(tcp->sockfd, tcp->timeout);
 
 				if (rc < 0
 					&& errno != EAGAIN

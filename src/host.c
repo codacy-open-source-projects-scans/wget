@@ -339,7 +339,7 @@ void host_add_robotstxt_job(HOST *host, const wget_iri *base, const char *encodi
 {
 	JOB *job;
 	blacklist_entry *blacklist_robots;
-	wget_iri *robot_iri = wget_iri_parse_base(base, "/robots.txt", encoding);
+	wget_iri *robot_iri = wget_iri_parse_base(base, "/robots.txt", encoding, 0);
 
 	if (!robot_iri || !(blacklist_robots = blacklist_add(robot_iri))) {
 		wget_iri_free(&robot_iri);
@@ -386,13 +386,15 @@ static void _host_remove_job(HOST *host, JOB *job)
 				if (thejob->sitemap)
 						continue;
 
-				for (int it = 0, n = wget_robots_get_path_count(host->robots); it < n; it++) {
-					wget_string *path = wget_robots_get_path(host->robots, it);
+				if (config.robots) {
+					for (int it = 0, n = wget_robots_get_path_count(host->robots); it < n; it++) {
+						wget_string *path = wget_robots_get_path(host->robots, it);
 
-					if (path->len && !strncmp(path->p + 1, thejob->iri->path ? thejob->iri->path : "", path->len - 1)) {
-						info_printf(_("URL '%s' not followed (disallowed by robots.txt)\n"), thejob->iri->safe_uri);
-						_host_remove_job(host, thejob);
-						break;
+						if (path->len && !strncmp(path->p + 1, thejob->iri->path ? thejob->iri->path : "", path->len - 1)) {
+							info_printf(_("URL '%s' not followed (disallowed by robots.txt)\n"), thejob->iri->safe_uri);
+							_host_remove_job(host, thejob);
+							break;
+						}
 					}
 				}
 			}
@@ -435,13 +437,14 @@ void host_increase_failure(HOST *host)
 {
 	wget_thread_mutex_lock(hosts_mutex);
 	host->failures++;
-	host->retry_ts = wget_get_timemillis() + host->failures * 1000;
+	host->retry_ts = wget_get_timemillis() + host->failures * config.waitretry;
 	debug_printf("%s: %s failures=%d\n", __func__, host->host, host->failures);
 
 	if (config.tries && host->failures >= config.tries) {
 		if (!host->blocked) {
 			host->blocked = 1;
 			qsize -= host->qsize;
+			set_exit_status(EXIT_STATUS_NETWORK);
 			debug_printf("%s: qsize=%d\n", __func__, qsize);
 		}
 	}

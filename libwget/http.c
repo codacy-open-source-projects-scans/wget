@@ -38,6 +38,7 @@
 #include <c-ctype.h>
 #include <time.h>
 #include <errno.h>
+#include <xstrtol.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -176,6 +177,11 @@ void wget_http_request_set_body_cb(wget_http_request *req, wget_http_body_callba
 	req->body_user_data = user_data;
 }
 
+void wget_http_request_set_free_user_data_cb(wget_http_request *req, wget_http_free_user_data_callback *callback)
+{
+	req->user_data_callback = callback;
+}
+
 void wget_http_request_set_int(wget_http_request *req, int key, int value)
 {
 	switch (key) {
@@ -212,6 +218,14 @@ void *wget_http_request_get_ptr(wget_http_request *req, int key)
 		error_printf(_("%s: Unknown key %d (or value must not be an integer)\n"), __func__, key);
 		return NULL;
 	}
+}
+
+// See RFC 9110
+bool wget_http_method_defines_content(const char *method)
+{
+	return (!wget_strcasecmp_ascii(method, "POST")
+	        || !wget_strcasecmp_ascii(method, "PUT")
+	        || !wget_strcasecmp_ascii(method, "PATCH"));
 }
 
 void wget_http_request_set_body(wget_http_request *req, const char *mimetype, char *body, size_t length)
@@ -443,7 +457,7 @@ void http_fix_broken_server_encoding(wget_http_response *resp)
 #ifdef WITH_LIBNGHTTP2
 #endif
 
-static int establish_proxy_connect(wget_tcp *tcp, const char *host, uint16_t port)
+static int establish_proxy_connect(wget_tcp *tcp, const char *host, uint16_t port, const char *proxy_auth_header)
 {
 	char sbuf[1024];
 	wget_buffer buf;
@@ -453,12 +467,20 @@ static int establish_proxy_connect(wget_tcp *tcp, const char *host, uint16_t por
 	// The use of Proxy-Connection has been discouraged in RFC 7230 A.1.2.
 	// wget_buffer_sprintf(buf, "CONNECT %s:%hu HTTP/1.1\r\nHost: %s\r\nProxy-Connection: keep-alive\r\n\r\n",
 
-	if (wget_ip_is_family(host, WGET_NET_FAMILY_IPV6))
-		wget_buffer_printf(&buf, "CONNECT [%s]:%hu HTTP/1.1\r\nHost: [%s]:%hu\r\n\r\n",
-			host, port, host, port);
-	else
-		wget_buffer_printf(&buf, "CONNECT %s:%hu HTTP/1.1\r\nHost: %s:%hu\r\n\r\n",
-			host, port, host, port);
+	// Build CONNECT request with optional Proxy-Authorization header
+	const char *host_left = wget_ip_is_family(host, WGET_NET_FAMILY_IPV6) ? "[" : "";
+	const char *host_right = *host_left == '[' ? "]" : "";
+
+	wget_buffer_printf(&buf, "CONNECT %s%s%s:%hu HTTP/1.1\r\nHost: %s%s%s:%hu\r\n",
+		host_left, host, host_right, port, host_left, host, host_right, port);
+
+	if (proxy_auth_header) {
+		debug_printf("# Sending CONNECT request (with Proxy-Authorization)\n%sProxy-Authorization: Basic *\r\n\r\n", buf.data);
+		wget_buffer_printf_append(&buf, "Proxy-Authorization: Basic %s\r\n\r\n", proxy_auth_header);
+	} else {
+		wget_buffer_strcat(&buf, "\r\n");
+		debug_printf("%s", buf.data);
+	}
 
 	if (wget_tcp_write(tcp, buf.data, buf.length) != (ssize_t) buf.length) {
 		wget_buffer_deinit(&buf);
@@ -537,6 +559,12 @@ int wget_http_open(wget_http_connection **_conn, const wget_iri *iri)
 					} else {
 						ssl = true;
 						need_connect = true;
+
+						// Compute Proxy-Authorization header for CONNECT tunnel if credentials are present
+						if (proxy_iri->userinfo && *proxy_iri->userinfo) {
+							conn->proxy_auth_header = (char *) wget_base64_encode_printf_alloc("%s:%s", proxy_iri->userinfo, proxy_iri->password ? proxy_iri->password : "");
+							debug_printf("HTTPS Proxy (libproxy): using credentials (userinfo=%s, password=*)\n", proxy_iri->userinfo);
+						}
 					}
 					wget_iri_free(&proxy_iri);
 				}
@@ -584,6 +612,12 @@ int wget_http_open(wget_http_connection **_conn, const wget_iri *iri)
 			// conn->proxied = 1;
 
 			need_connect = true;
+
+			// Compute Proxy-Authorization header for CONNECT tunnel if credentials are present
+			if (proxy->userinfo && *proxy->userinfo) {
+				conn->proxy_auth_header = (char *) wget_base64_encode_printf_alloc("%s:%s", proxy->userinfo, proxy->password ? proxy->password : "");
+				debug_printf("HTTPS Proxy: using credentials (userinfo=%s, password=*)\n", proxy->userinfo);
+			}
 		}
 	}
 #endif
@@ -602,7 +636,7 @@ int wget_http_open(wget_http_connection **_conn, const wget_iri *iri)
 	}
 
 	if (need_connect) {
-		if ((rc = establish_proxy_connect(conn->tcp, iri->host, iri->port)) != WGET_E_SUCCESS) {
+		if ((rc = establish_proxy_connect(conn->tcp, iri->host, iri->port, conn->proxy_auth_header)) != WGET_E_SUCCESS) {
 			wget_http_close(_conn);
 			return rc;
 		}
@@ -610,7 +644,13 @@ int wget_http_open(wget_http_connection **_conn, const wget_iri *iri)
 		if (iri->scheme == WGET_IRI_SCHEME_HTTPS) {
 			wget_tcp_set_ssl(conn->tcp, 1); // switch SSL on
 			wget_tcp_set_ssl_hostname(conn->tcp, iri->host); // enable host name checking
-			wget_tcp_tls_start(conn->tcp);
+
+			if ((rc = wget_tcp_tls_start(conn->tcp)) != WGET_E_SUCCESS) {
+				if (server_stats_callback && rc == WGET_E_CERTIFICATE)
+					server_stats_callback(conn, NULL);
+				wget_http_close(_conn);
+				return rc;
+			}
 		}
 	}
 
@@ -646,6 +686,7 @@ void wget_http_close(wget_http_connection **conn)
 //		if (!wget_tcp_get_dns_caching())
 //			freeaddrinfo((*conn)->addrinfo);
 		xfree((*conn)->esc_host);
+		xfree((*conn)->proxy_auth_header);
 		// xfree((*conn)->scheme);
 		wget_buffer_free(&(*conn)->buf);
 		wget_vector_clear_nofree((*conn)->pending_requests);
@@ -654,7 +695,9 @@ void wget_http_close(wget_http_connection **conn)
 	}
 }
 
-int wget_http_send_request(wget_http_connection *conn, wget_http_request *req)
+// Takes ownership of req on success, means the caller's req will be set to NULL to avoid
+// double-free and free-after-use failures.
+int wget_http_send_request(wget_http_connection *conn, wget_http_request **req)
 {
 	ssize_t nbytes;
 
@@ -664,33 +707,34 @@ int wget_http_send_request(wget_http_connection *conn, wget_http_request *req)
 	}
 #endif
 
-	if ((nbytes = wget_http_request_to_buffer(req, conn->buf, conn->proxied, conn->port)) < 0) {
+	if ((nbytes = wget_http_request_to_buffer(*req, conn->buf, conn->proxied, conn->port)) < 0) {
 		error_printf(_("Failed to create request buffer\n"));
-		return -1;
+		return WGET_E_UNKNOWN;
 	}
 
-	req->request_start = wget_get_timemillis();
+	(*req)->request_start = wget_get_timemillis();
 
 	if (wget_tcp_write(conn->tcp, conn->buf->data, nbytes) != nbytes) {
 		// An error will be written by the wget_tcp_write function.
 		// error_printf(_("Failed to send %zd bytes (%d)\n"), nbytes, errno);
-		return -1;
+		return WGET_E_UNKNOWN;
 	}
 
-	wget_vector_add(conn->pending_requests, req);
-
-	if (req->debug_skip_body)
-		debug_printf("# sent %zd bytes:\n%.*s<body skipped>", nbytes, (int)(conn->buf->length - req->body_length), conn->buf->data);
+	if ((*req)->debug_skip_body)
+		debug_printf("# sent %zd bytes:\n%.*s<body skipped>", nbytes, (int) (conn->buf->length - (*req)->body_length), conn->buf->data);
 	else
-		debug_printf("# sent %zd bytes:\n%.*s", nbytes, (int)conn->buf->length, conn->buf->data);
+		debug_printf("# sent %zd bytes:\n%.*s", nbytes, (int) conn->buf->length, conn->buf->data);
 
-	return 0;
+	wget_vector_add(conn->pending_requests, *req);
+	*req = NULL;
+
+	return WGET_E_SUCCESS;
 }
 
 ssize_t wget_http_request_to_buffer(wget_http_request *req, wget_buffer *buf, int proxied, int port)
 {
-	char have_content_length = 0;
-	char check_content_length = req->body && req->body_length;
+	bool add_content_length = (req->body && req->body_length)
+		|| wget_http_method_defines_content(req->method);
 
 //	wget_buffer_sprintf(buf, "%s /%s HTTP/1.1\r\nHost: %s", req->method, req->esc_resource.data ? req->esc_resource.data : "",);
 
@@ -719,8 +763,8 @@ ssize_t wget_http_request_to_buffer(wget_http_request *req, wget_buffer *buf, in
 			wget_buffer_memcat(buf, "\r\n", 2);
 		}
 
-		if (check_content_length && !wget_strcasecmp_ascii(param->name, "Content-Length"))
-			have_content_length = 1; // User supplied Content-Length header, keep it unchecked
+		if (!wget_strcasecmp_ascii(param->name, "Content-Length"))
+			add_content_length = false; // User supplied Content-Length header, keep it unchecked
 	}
 
 /* The use of Proxy-Connection has been discouraged in RFC 7230 A.1.2.
@@ -728,7 +772,7 @@ ssize_t wget_http_request_to_buffer(wget_http_request *req, wget_buffer *buf, in
 		wget_buffer_strcat(buf, "Proxy-Connection: keep-alive\r\n");
 */
 
-	if (check_content_length && !have_content_length)
+	if (add_content_length)
 		wget_buffer_printf_append(buf, "Content-Length: %zu\r\n", req->body_length);
 
 	wget_buffer_memcat(buf, "\r\n", 2); // end-of-header
@@ -797,8 +841,10 @@ skip_1xx:
 				wget_buffer_memcat(header, "\r\n", 2);
 			}
 
-			if (!(resp = wget_http_parse_response_header(buf)))
+			if (!(resp = wget_http_parse_response_header(buf))) {
+				debug_printf("failed to parse response header");
 				goto cleanup; // something is wrong with the header
+			}
 
 			if (H_10X(resp->code)) {
 				wget_http_free_response(&resp);
@@ -825,8 +871,10 @@ skip_1xx:
 				req->header_callback(resp, req->header_user_data);
 			}
 
-			if (!wget_strcasecmp_ascii(req->method, "HEAD"))
+			if (!wget_strcasecmp_ascii(req->method, "HEAD")) {
+				debug_printf("HEAD response with a body");
 				goto cleanup; // a HEAD response won't have a body
+			}
 
 			http_fix_broken_server_encoding(resp);
 
@@ -843,8 +891,14 @@ skip_1xx:
 			bufsize = conn->buf->size;
 		}
 	}
-	if (!nread) goto cleanup;
-	if (!p) goto cleanup;
+	if (!nread) {
+		debug_printf("incomplete response data");
+		goto cleanup;
+	}
+	if (!p) {
+		debug_printf("missing end-of-header");
+		goto cleanup;
+	}
 
 	if (resp && resp->code == HTTP_STATUS_RANGE_NOT_SATISFIABLE) {
 		/*
@@ -857,6 +911,7 @@ skip_1xx:
 		       requested has been rejected due to invalid ranges or an excessive
 		       request of small or overlapping ranges.
 		*/
+		debug_printf("range request is not satisfiable");
 		goto cleanup;
 	}
 	if (!resp
@@ -865,6 +920,7 @@ skip_1xx:
 	 || (resp->transfer_encoding == wget_transfer_encoding_identity && resp->content_length == 0 && resp->content_length_valid)) {
 		// - body not included, see RFC 2616 4.3
 		// - body empty, see RFC 2616 4.4
+		debug_printf("response with no body");
 		goto cleanup;
 	}
 
@@ -939,8 +995,10 @@ skip_1xx:
 					bufsize = conn->buf->size;
 				}
 
-				if ((nbytes = wget_tcp_read(conn->tcp, buf + body_len, bufsize - body_len)) <= 0)
+				if ((nbytes = wget_tcp_read(conn->tcp, buf + body_len, bufsize - body_len)) <= 0) {
+					debug_printf("failed to read data (%zd)", nbytes);
 					goto cleanup;
+				}
 
 				body_len += nbytes;
 				buf[body_len] = 0;
@@ -961,8 +1019,10 @@ skip_1xx:
 			// debug_printf("chunk size is %zu\n", chunk_size);
 			if (chunk_size == 0) {
 				// now read 'trailer CRLF' which is '*(entity-header CRLF) CRLF'
-				if (*end == '\r' && end[1] == '\n') // shortcut for the most likely case (empty trailer)
+				if (*end == '\r' && end[1] == '\n') { // shortcut for the most likely case (empty trailer)
+					debug_printf("missing CRLF chunk trailer");
 					goto cleanup;
+				}
 
 				debug_printf("reading trailer\n");
 				while (!strstr(end, "\r\n\r\n")) {
@@ -972,11 +1032,15 @@ skip_1xx:
 						body_len = 3;
 					}
 
-					if (http_connection_is_aborted(conn))
+					if (http_connection_is_aborted(conn)) {
+						debug_printf("connection was aborted");
 						goto cleanup;
+					}
 
-					if ((nbytes = wget_tcp_read(conn->tcp, buf + body_len, bufsize - body_len)) <= 0)
+					if ((nbytes = wget_tcp_read(conn->tcp, buf + body_len, bufsize - body_len)) <= 0) {
+						debug_printf("failed to read data (%zd)", nbytes);
 						goto cleanup;
+					}
 
 					body_len += nbytes;
 					buf[body_len] = 0;
@@ -1000,8 +1064,10 @@ skip_1xx:
 			if (p <= buf + body_len) {
 				// debug_printf("write full chunk, %zu bytes\n", chunk_size);
 				resp->cur_downloaded += chunk_size;
-				if (wget_decompress(dc, end, chunk_size))
+				if (wget_decompress(dc, end, chunk_size)) {
+					debug_printf("failed to decompress chunk data");
 					goto cleanup;
+				}
 				continue;
 			}
 
@@ -1010,12 +1076,16 @@ skip_1xx:
 
 			if ((uintptr_t)((buf + body_len) - end) > chunk_size) {
 				resp->cur_downloaded += chunk_size;
-				if (wget_decompress(dc, end, chunk_size))
+				if (wget_decompress(dc, end, chunk_size)) {
+					debug_printf("failed to decompress chunk data");
 					goto cleanup;
+				}
 			} else {
 				resp->cur_downloaded += (buf + body_len) - end;
-				if (wget_decompress(dc, end, (buf + body_len) - end))
+				if (wget_decompress(dc, end, (buf + body_len) - end)) {
+					debug_printf("failed to decompress chunk data");
 					goto cleanup;
+				}
 			}
 
 			chunk_size = (((uintptr_t) p) - ((uintptr_t) (buf + body_len))); // in fact needed bytes to have chunk_size+2 in buf
@@ -1023,11 +1093,15 @@ skip_1xx:
 			debug_printf("need at least %zu more bytes\n", chunk_size);
 
 			while (chunk_size > 0) {
-				if (http_connection_is_aborted(conn))
+				if (http_connection_is_aborted(conn)) {
+					debug_printf("connection was aborted");
 					goto cleanup;
+				}
 
-				if ((nbytes = wget_tcp_read(conn->tcp, buf, bufsize)) <= 0)
+				if ((nbytes = wget_tcp_read(conn->tcp, buf, bufsize)) <= 0) {
+					debug_printf("failed to read data (%zd)", nbytes);
 					goto cleanup;
+				}
 				// debug_printf("a nbytes=%zd chunk_size=%zu\n", nread, chunk_size);
 
 				if (chunk_size <= (size_t)nbytes) {
@@ -1042,8 +1116,10 @@ skip_1xx:
 					}
 					if (chunk_size > 2) {
 						resp->cur_downloaded += chunk_size - 2;
-						if (wget_decompress(dc, buf, chunk_size - 2))
+						if (wget_decompress(dc, buf, chunk_size - 2)) {
+							debug_printf("failed to decompress chunk data");
 							goto cleanup;
+						}
 					}
 					body_len = nbytes - chunk_size;
 					if (body_len)
@@ -1055,13 +1131,17 @@ skip_1xx:
 					chunk_size -= nbytes;
 					if (chunk_size >= 2) {
 						resp->cur_downloaded += nbytes;
-						if (wget_decompress(dc, buf, nbytes))
+						if (wget_decompress(dc, buf, nbytes)) {
+							debug_printf("failed to decompress chunk data");
 							goto cleanup;
+						}
 					} else {
 						// special case: we got a partial end-of-chunk
 						resp->cur_downloaded += nbytes - 1;
-						if (wget_decompress(dc, buf, nbytes - 1))
+						if (wget_decompress(dc, buf, nbytes - 1)) {
+							debug_printf("failed to decompress chunk data");
 							goto cleanup;
+						}
 					}
 				}
 			}
@@ -1071,8 +1151,10 @@ skip_1xx:
 		debug_printf("method 2\n");
 
 		if (body_len) {
-			if (wget_decompress(dc, buf, body_len))
+			if (wget_decompress(dc, buf, body_len)) {
+				debug_printf("failed to decompress data");
 				goto cleanup;
+			}
 		}
 
 		while (body_len < resp->content_length) {
@@ -1085,8 +1167,10 @@ skip_1xx:
 			body_len += nbytes;
 			// debug_printf("nbytes %zd total %zu/%zu\n", nbytes, body_len, resp->content_length);
 			resp->cur_downloaded += nbytes;
-			if (wget_decompress(dc, buf, nbytes))
+			if (wget_decompress(dc, buf, nbytes)) {
+				debug_printf("failed to decompress data");
 				goto cleanup;
+			}
 		}
 		if (nbytes < 0) {
 			char *page = get_page(req);
@@ -1110,16 +1194,20 @@ skip_1xx:
 		debug_printf("method 3\n");
 
 		if (body_len) {
-			if (wget_decompress(dc, buf, body_len))
+			if (wget_decompress(dc, buf, body_len)) {
+				debug_printf("failed to decompress data");
 				goto cleanup;
+			}
 		}
 
 		while (!http_connection_is_aborted(conn) && (nbytes = wget_tcp_read(conn->tcp, buf, bufsize)) > 0) {
 			body_len += nbytes;
 			// debug_printf("nbytes %zd total %zu\n", nbytes, body_len);
 			resp->cur_downloaded += nbytes;
-			if (wget_decompress(dc, buf, nbytes))
+			if (wget_decompress(dc, buf, nbytes)) {
+				debug_printf("failed to decompress data");
 				goto cleanup;
+			}
 		}
 		resp->content_length = body_len;
 	}
@@ -1128,6 +1216,8 @@ cleanup:
 
 	if (resp)
 		resp->response_end = wget_get_timemillis();
+	else
+		wget_http_free_request(&req);
 
 	wget_decompress_close(dc);
 
@@ -1272,7 +1362,9 @@ static bool cidr_v4_match(const char *cidr, struct in_addr *addr)
 	if (slash_pos == NULL) {
 		return false; // invalid CIDR range
 	}
-	int prefix_len = atoi(slash_pos + 1);
+	long prefix_len;
+	if (xstrtol(slash_pos + 1, NULL, 10, &prefix_len, NULL) != LONGINT_OK)
+		return false; // invalid prefix length
 	if (prefix_len < 0 || prefix_len > 32) {
 		return false; // invalid prefix length
 	}
@@ -1292,13 +1384,16 @@ static bool cidr_v4_match(const char *cidr, struct in_addr *addr)
 
 #include <netinet/in.h>
 
+#ifdef HAVE_IPV6
 static bool cidr_v6_match(const char *cidr, struct in6_addr *addr)
 {
 	const char *slash_pos = strchr(cidr, '/');
 	if (slash_pos == NULL) {
 		return false; // invalid CIDR range
 	}
-	int prefix_len = atoi(slash_pos + 1);
+	long prefix_len;
+	if (xstrtol(slash_pos + 1, NULL, 10, &prefix_len, NULL) != LONGINT_OK)
+		return false; // invalid prefix length
 	if (prefix_len < 0 || prefix_len > 128) {
 		return false; // invalid prefix length
 	}
@@ -1321,6 +1416,7 @@ static bool cidr_v6_match(const char *cidr, struct in6_addr *addr)
 	uint8_t mask = (uint8_t) ~(0xFF >> bits);
 	return ((network_addr.s6_addr[bytes] ^ addr->s6_addr[bytes]) & mask) == 0;
 }
+#endif
 
 int wget_http_match_no_proxy(const wget_vector *no_proxies_vec, const char *host)
 {
@@ -1328,13 +1424,17 @@ int wget_http_match_no_proxy(const wget_vector *no_proxies_vec, const char *host
 		return 0;
 
 	struct in_addr addr;
+#ifdef HAVE_IPV6
 	struct in6_addr addr6;
+#endif
 	bool ipv4 = false, ipv6 = false;
 
 	if (inet_pton(AF_INET, host, &addr) == 1) {
 		ipv4 = true;
+#ifdef HAVE_IPV6
 	} else if (inet_pton(AF_INET6, host, &addr6) == 1) {
 		ipv6 = true;
+#endif
 	}
 
 	// https://www.gnu.org/software/emacs/manual/html_node/url/Proxies.html
@@ -1351,10 +1451,12 @@ int wget_http_match_no_proxy(const wget_vector *no_proxies_vec, const char *host
 			if (cidr_v4_match(no_proxy, &addr)) {
 				return 1;
 			}
+#ifdef HAVE_IPV6
 		} else if (ipv6) {
 			if (cidr_v6_match(no_proxy, &addr6)) {
 				return 1;
 			}
+#endif
 		}
 
 		// check for subdomain match

@@ -35,9 +35,12 @@
 #include <errno.h>
 #include <stdint.h>
 
+#include <xstrtol.h>
+
 #include <wget.h>
 #include "private.h"
 #include "http.h"
+#include "filename.h"
 
 #define HTTP_CTYPE_SEPARATOR (1<<0)
 
@@ -301,7 +304,9 @@ const char *wget_http_parse_link(const char *s, wget_http_link *link)
 						else if (!wget_strcasecmp_ascii(value, "duplicate"))
 							link->rel = link_rel_duplicate;
 					} else if (!wget_strcasecmp_ascii(name, "pri")) {
-						link->pri = atoi(value);
+						long pri;
+						if (xstrtol(value, NULL, 10, &pri, NULL) == LONGINT_OK)
+							link->pri = (int) pri;
 					} else if (!wget_strcasecmp_ascii(name, "type")) {
 						if (!link->type) {
 							link->type = value;
@@ -518,6 +523,61 @@ const char *wget_http_parse_content_type(const char *s, const char **content_typ
 //
 // ext-value   = <ext-value, defined in [RFC5987], Section 3.2>
 
+// Sanitize a filename by stripping directory traversal sequences ("../" and
+// "..\\"), absolute paths (leading "/" or "\\"), drive letters (Windows),
+// and trailing ".." components.
+//
+// Returns a newly allocated string (caller must xfree).  Returns "" for empty
+// or traversal-only input.
+WGET_GCC_NONNULL_ALL
+static char *sanitize_filename(const char *fname)
+{
+	// Handle ".." as a special case (entire input is traversal)
+	if (streq(fname, ".."))
+		return wget_strdup("");
+
+	size_t len = strlen(fname);
+
+	char *sanitized = wget_malloc(len + 1);
+	if (!sanitized)
+		return wget_strdup("");
+
+	size_t j = 0;
+	size_t i = FILE_SYSTEM_PREFIX_LEN(fname); // skip drive letter on Windows
+
+	while (i < len) {
+		// Skip "../" (and "..\\" on Win32) sequences (and preceding separator)
+		if (i + 3 <= len && fname[i] == '.' && fname[i + 1] == '.'
+		    && ISSLASH(fname[i + 2])) {
+			i += 3;
+			// Skip preceding separator to handle "foo\.." → "foo" not "foo\"
+			if (j > 0 && ISSLASH(sanitized[j - 1]))
+				j--;
+			while (j > 0 && !ISSLASH(sanitized[j - 1]))
+				j--;
+			continue;
+		}
+		// Skip leading "/" or "\\" (absolute path)
+		if (j == 0 && ISSLASH(fname[i])) {
+			i++;
+			continue;
+		}
+		// Skip "/.." (and "\\.." on Win32) at end of string
+		if (i == len - 3 && ISSLASH(fname[i]) && fname[i + 1] == '.' && fname[i + 2] == '.') {
+			i += 3;
+			if (j > 0 && ISSLASH(sanitized[j - 1]))
+				j--;
+			while (j > 0 && !ISSLASH(sanitized[j - 1]))
+				j--;
+			continue;
+		}
+		sanitized[j++] = fname[i++];
+	}
+
+	sanitized[j] = '\0';
+	return sanitized;
+}
+
 const char *wget_http_parse_content_disposition(const char *s, const char **filename)
 {
 	if (filename) {
@@ -531,28 +591,22 @@ const char *wget_http_parse_content_disposition(const char *s, const char **file
 			if (param.value && !wget_strcasecmp_ascii("filename", param.name)) {
 				// just take the last path part as filename
 				if (!*filename) {
-					if ((p = strrchr(param.value,'/'))) {
-						char *p2;
-						if ((p2 = strrchr(p + 1, '\\'))) {
-							p = wget_strdup(p2 + 1);
-						} else {
-							p = wget_strdup(p + 1);
-						}
-					} else {
-						p = (char *) param.value;
-						param.value = NULL;
+					p = wget_strdup(param.value);
+					if (!p) {
+						xfree(param.name);
+						xfree(param.value);
+						break; // stop looping
 					}
-
 					wget_percent_unescape(p);
-					if (!wget_str_is_valid_utf8(p)) {
+					char *f = sanitize_filename(p);
+					xfree(p);
+					if (!wget_str_is_valid_utf8(f)) {
 						// if it is not UTF-8, assume ISO-8859-1
 						// see https://stackoverflow.com/questions/93551/how-to-encode-the-filename-parameter-of-content-disposition-header-in-http
-						*filename = wget_str_to_utf8(p, "iso-8859-1");
-						xfree(p);
-					} else {
-						*filename = p;
-						p = NULL;
-					}
+						*filename = wget_str_to_utf8(f, "iso-8859-1");
+						xfree(f);
+					} else
+						*filename = f;
 				}
 			} else if (param.value && !wget_strcasecmp_ascii("filename*", param.name)) {
 				// RFC5987
@@ -583,30 +637,22 @@ const char *wget_http_parse_content_disposition(const char *s, const char **file
 				//		/ "^" / "_" / "`" / "|" / "~"
 				//		; token except ( "*" / "'" / "%" )
 
-				if ((p = strchr(param.value, '\''))) {
+				if ((p = strchr((char *) param.value, '\''))) {
 					const char *charset = param.value;
 					const char *language = p + 1;
 					*p = 0;
-					if ((p = strchr(language, '\''))) {
+					if ((p = (char *) strchr(language, '\''))) {
 						*p++ = 0;
 						if (*p) {
 							wget_percent_unescape(p);
-							if (wget_str_needs_encoding(p))
+							// Strip directory traversal sequences to prevent path traversal attacks
+							p = sanitize_filename(p);
+							if (wget_str_needs_encoding(p)) {
 								*filename = wget_str_to_utf8(p, charset);
-							else
-								*filename = wget_strdup(p);
-
-							// just take the last path part as filename
-							if (*filename) {
-								if ((p = strrchr(*filename, '/'))) {
-									char *p2;
-									if ((p2 = strrchr(p + 1, '\\')))
-										p = p2;
-									p = wget_strdup(p + 1);
-									xfree(*filename);
-									*filename = p;
-								}
+								xfree(p);
 							}
+							else
+								*filename = p;
 
 							xfree(param.name);
 							xfree(param.value);
@@ -641,7 +687,9 @@ const char *wget_http_parse_public_key_pins(const char *s, wget_hpkp *hpkp)
 
 		if (param.value) {
 			if (!wget_strcasecmp_ascii(param.name, "max-age")) {
-				wget_hpkp_set_maxage(hpkp, (int64_t) atoll(param.value));
+				long long maxage;
+				if (xstrtoll(param.value, NULL, 10, &maxage, NULL) == LONGINT_OK)
+					wget_hpkp_set_maxage(hpkp, (int64_t) maxage);
 			} else if (!wget_strncasecmp_ascii(param.name, "pin-", 4)) {
 				wget_hpkp_pin_add(hpkp, param.name + 4, param.value);
 			}
@@ -676,7 +724,9 @@ const char *wget_http_parse_strict_transport_security(const char *s, int64_t *ma
 
 		if (param.value) {
 			if (!wget_strcasecmp_ascii(param.name, "max-age")) {
-				*maxage = (int64_t) atoll(param.value);
+				long long val;
+				if (xstrtoll(param.value, NULL, 10, &val, NULL) == LONGINT_OK)
+					*maxage = (int64_t) val;
 			}
 		} else {
 			if (!wget_strcasecmp_ascii(param.name, "includeSubDomains")) {
@@ -1104,7 +1154,9 @@ int wget_http_parse_header_line(wget_http_response *resp, const char *name, size
 			if (!resp->content_type && !resp->content_type_encoding)
 				wget_http_parse_content_type(value0, &resp->content_type, &resp->content_type_encoding);
 		} else if (!wget_strncasecmp_ascii(name, "content-length", namelen)) {
-			resp->content_length = (size_t)atoll(value0);
+			unsigned long long cl;
+			if (xstrtoull(value0, NULL, 10, &cl, NULL) == LONGINT_OK)
+				resp->content_length = (size_t) cl;
 			resp->content_length_valid = 1;
 		} else if (!wget_strncasecmp_ascii(name, "content-disposition", namelen)) {
 			if (!resp->content_filename)
@@ -1139,7 +1191,9 @@ int wget_http_parse_header_line(wget_http_response *resp, const char *name, size
 		break;
 	case 'i':
 		if (!wget_strncasecmp_ascii(name, "icy-metaint", namelen)) {
-			resp->icy_metaint = atoi(value0);
+			long metaint;
+			if (xstrtol(value0, NULL, 10, &metaint, NULL) == LONGINT_OK)
+				resp->icy_metaint = (int) metaint;
 		} else
 			ret = WGET_E_UNKNOWN;
 		break;
@@ -1235,7 +1289,7 @@ int wget_http_parse_header_line(wget_http_response *resp, const char *name, size
 			ret = WGET_E_UNKNOWN;
 		break;
 	case 'x':
-		if (!wget_strncasecmp_ascii(name, "x-archive-orig-last-modified", namelen)) {
+		if (!wget_strncasecmp_ascii(name, "x-archive-orig-last-modified", 28)) {
 			resp->last_modified = wget_http_parse_full_date(value0);
 		} else
 			ret = WGET_E_UNKNOWN;
@@ -1391,6 +1445,7 @@ void wget_http_free_response(wget_http_response **resp)
 		// xfree((*resp)->reason);
 		wget_buffer_free(&(*resp)->header);
 		wget_buffer_free(&(*resp)->body);
+		wget_http_free_request(&(*resp)->req);
 		xfree(*resp);
 	}
 }
@@ -1399,6 +1454,8 @@ void wget_http_free_response(wget_http_response **resp)
 void wget_http_free_request(wget_http_request **req)
 {
 	if (req && *req) {
+		if ((*req)->user_data_callback)
+			(*req)->user_data_callback(*req);
 		wget_buffer_deinit(&(*req)->esc_resource);
 		wget_buffer_deinit(&(*req)->esc_host);
 		wget_vector_free(&(*req)->headers);

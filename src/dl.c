@@ -65,10 +65,15 @@ void dl_error_set_printf (dl_error_t *e, const char *format, ...)
 // else returns NULL
 static char *convert_to_path_if_not(const char *str)
 {
-	if (str && !strchr(str, '/'))
-		return wget_aprintf("./%s", str);
+	if (!str || strchr(str, '/'))
+		return NULL;
 
-	return NULL;
+#if defined _WIN32
+	if (strchr(str, '\\'))
+		return NULL;
+#endif
+
+	return wget_aprintf("./%s", str);
 }
 #endif
 
@@ -107,6 +112,21 @@ void *dl_file_lookup(dl_file_t *dm, const char *symbol, dl_error_t *e)
 {
 	void *res;
 	char *error;
+
+#ifdef __OS2__
+	// On OS/2, symbols may have underscore('_') prefix.
+	{
+		char *os2_symbol;
+		wget_asprintf(&os2_symbol, "_%s", symbol);
+		if (os2_symbol) {
+			res = dlsym(dm->handle, os2_symbol);
+			xfree(os2_symbol);
+			if (res)
+				return res;
+		}
+		// fall back
+	}
+#endif
 
 	res = dlsym(dm->handle, symbol);
 	error = dlerror();
@@ -226,6 +246,8 @@ typedef struct {
 #define PATTERNS {"lib", ".so"}, {"lib", ".bundle"}, {"lib", ".dylib"}
 #elif defined __CYGWIN__
 #define PATTERNS {"cyg", ".dll"}
+#elif defined __OS2__
+#define PATTERNS {"lib", ".dll"}, {"", ".dll"}
 #else
 #define PATTERNS {"lib", ".so"}
 #endif
@@ -244,7 +266,7 @@ static int dl_match(const char *path, size_t *start_out, size_t *len_out)
 	for (i = 0; path[i]; i++) {
 		if (path[i] == '/')
 			mark = i + 1;
-#ifdef _WIN32
+#if defined _WIN32 || defined __OS2__
 		if (path[i] == '\\')
 			mark = i + 1;
 #endif // _WIN32

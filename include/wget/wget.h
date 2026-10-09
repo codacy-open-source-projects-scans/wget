@@ -46,7 +46,7 @@
 // see https://www.gnu.org/software/gnulib/manual/html_node/Exported-Symbols-of-Shared-Libraries.html
 #if defined BUILDING_LIBWGET && HAVE_VISIBILITY
 #	define WGETAPI __attribute__ ((__visibility__("default")))
-#elif defined BUILDING_LIBWGET && defined _MSC_VER && !defined LIBWGET_STATIC
+#elif defined BUILDING_LIBWGET && (defined _MSC_VER || defined __OS2__) && !defined LIBWGET_STATIC
 #	define WGETAPI __declspec(dllexport)
 #elif defined _MSC_VER && !defined LIBWGET_STATIC
 #	define WGETAPI __declspec(dllimport)
@@ -267,6 +267,7 @@ typedef enum {
 	WGET_E_OPEN = -10, /* Failed to open file */
 	WGET_E_IO = -11, /* General I/O error (read/write/stat/...) */
 	WGET_E_UNSUPPORTED = -12, /* Unsupported function */
+	WGET_E_XML_MAX_DEPTH = -13, /* XML max depth was reached*/
 } wget_error;
 
 WGETAPI const char *
@@ -349,6 +350,8 @@ WGETAPI char *
 	wget_human_readable(char *buf, size_t bufsize, uint64_t n);
 WGETAPI int
 	wget_get_screen_size(int *width, int *height);
+WGETAPI char * NULLABLE
+	wget_path_sanitize(const char *path) WGET_GCC_MALLOC;
 WGETAPI ssize_t
 	wget_fdgetline(char **buf, size_t *bufsize, int fd);
 WGETAPI ssize_t
@@ -1179,6 +1182,9 @@ typedef enum {
 // flags for wget_iri_get_basename()
 #define WGET_IRI_WITH_QUERY  1
 
+// flags for wget_iri_parse_ex()
+#define WGET_IRI_KEEP_AS_IS  2
+
 /**
  * \ingroup libwget-iri
  *
@@ -1277,6 +1283,9 @@ struct wget_iri_st {
 	/// If set, the hostname part is a literal IPv4/IPv6 address
 	bool
 		is_ip_address : 1;
+	/// If set, the path part wasn't percent unescaped (e.g. for Location: headers in redirections)
+	bool
+		keep_path_as_is : 1;
 };
 
 typedef struct wget_iri_st wget_iri;
@@ -1310,8 +1319,10 @@ WGETAPI char *
 	wget_iri_unescape_url_inline(char *src) WGET_GCC_NONNULL_ALL;
 WGETAPI wget_iri *
 	wget_iri_parse(const char *uri, const char *encoding);
+WGETAPI wget_iri *
+	wget_iri_parse_ex(const char *uri, const char *encoding, int flags);
 WGETAPI wget_iri * NULLABLE
-	wget_iri_parse_base(const wget_iri *base, const char *url, const char *encoding);
+	wget_iri_parse_base(const wget_iri *base, const char *url, const char *encoding, int flags);
 WGETAPI wget_iri * NULLABLE
 	wget_iri_clone(const wget_iri *iri);
 WGETAPI const char * NULLABLE
@@ -1404,11 +1415,11 @@ typedef struct wget_hsts_db_st wget_hsts_db;
  * See tests/test-plugin-dummy.c and tests/Makefile.am for details.
  */
 
-typedef int wget_hsts_host_match_fn(const wget_hsts_db *hsts_db, const char *host, uint16_t port);
+typedef int wget_hsts_host_match_fn(const wget_hsts_db *hsts_db, const char *host);
 typedef wget_hsts_db *wget_hsts_db_init_fn(wget_hsts_db *hsts_db, const char *fname);
 typedef void wget_hsts_db_deinit_fn(wget_hsts_db *hsts_db);
 typedef void wget_hsts_db_free_fn(wget_hsts_db **hsts_db);
-typedef void wget_hsts_db_add_fn(wget_hsts_db *hsts_db, const char *host, uint16_t port, int64_t maxage, bool include_subdomains);
+typedef void wget_hsts_db_add_fn(wget_hsts_db *hsts_db, const char *host, int64_t maxage, bool include_subdomains);
 typedef int wget_hsts_db_save_fn(wget_hsts_db *hsts_db);
 typedef int wget_hsts_db_load_fn(wget_hsts_db *hsts_db);
 typedef void wget_hsts_db_set_fname_fn(wget_hsts_db *hsts_db, const char *fname);
@@ -1733,7 +1744,7 @@ WGETAPI wget_vector *
 	wget_css_get_urls(
 		const char *css,
 		size_t len,
-		wget_iri *base,
+		const wget_iri *base,
 		const char **encoding) WGET_GCC_NONNULL((1));
 WGETAPI wget_vector *
 	wget_css_get_urls_from_localfile(
@@ -1759,6 +1770,8 @@ typedef struct {
 		tag[16]; //!< name of the HTML tag containing the URL, e.g. 'a'
 	bool
 		link_inline : 1; //!< 1 = rel was 'stylesheet' or 'shortcut icon'
+	bool
+		url_heap_allocated : 1; //!< 1 = url.p was heap-allocated and needs freeing
 } wget_html_parsed_url;
 
 typedef struct {
@@ -2088,10 +2101,13 @@ typedef struct wget_http_response_st wget_http_response;
 typedef int wget_http_header_callback(wget_http_response *, void *);
 typedef int wget_http_body_callback(wget_http_response *, void *, const char *, size_t);
 
+typedef struct wget_http_request_st wget_http_request;
+typedef void wget_http_free_user_data_callback(wget_http_request *);
+
 /**
  * HTTP request data
  */
-typedef struct {
+struct wget_http_request_st {
 	wget_vector *
 		headers; //!< list of HTTP headers
 	const char *
@@ -2100,6 +2116,8 @@ typedef struct {
 		*header_callback; //!< called after HTTP header has been received
 	wget_http_body_callback
 		*body_callback; //!< called for each body data packet received
+	wget_http_free_user_data_callback
+		*user_data_callback; //!< called when request object is free'd
 	void *
 		user_data; //!< user data for the request (used by async application code)
 	void *
@@ -2133,7 +2151,7 @@ typedef struct {
 	long long
 		first_response_start; //!< The time we read the first bytes back
 
-} wget_http_request;
+};
 
 /**
  * HTTP response data
@@ -2341,6 +2359,8 @@ WGETAPI void
 WGETAPI void
 	wget_http_request_set_body_cb(wget_http_request *req, wget_http_body_callback *cb, void *user_data) WGET_GCC_NONNULL((1));
 WGETAPI void
+	wget_http_request_set_free_user_data_cb(wget_http_request *req, wget_http_free_user_data_callback *cb) WGET_GCC_NONNULL((1));
+WGETAPI void
 	wget_http_request_set_int(wget_http_request *req, int key, int value) WGET_GCC_NONNULL((1));
 WGETAPI int
 	wget_http_request_get_int(wget_http_request *req, int key) WGET_GCC_NONNULL((1));
@@ -2351,7 +2371,7 @@ WGETAPI void *
 WGETAPI void
 	wget_http_request_set_body(wget_http_request *req, const char *mimetype, char *body, size_t length) WGET_GCC_NONNULL((1));
 WGETAPI int
-	wget_http_send_request(wget_http_connection *conn, wget_http_request *req) WGET_GCC_NONNULL_ALL;
+	wget_http_send_request(wget_http_connection *conn, wget_http_request **req) WGET_GCC_NONNULL_ALL;
 WGETAPI ssize_t
 	wget_http_request_to_buffer(wget_http_request *req, wget_buffer *buf, int proxied, int port) WGET_GCC_NONNULL_ALL;
 
@@ -2577,7 +2597,7 @@ WGETAPI void
  *
  *     WGET_EXPORT void wget_plugin_initializer(wget_plugin *plugin);
  */
-#ifdef _WIN32
+#if defined _WIN32 || defined __OS2__
 #	define WGET_EXPORT __declspec(dllexport)
 #elif __GNUC__ > 4
 #	define WGET_EXPORT __attribute__ ((__visibility__("default")))

@@ -197,12 +197,12 @@ Go to background immediately after startup. If no output file is specified via t
 
 ### `--force-atom`
 
-  Read and parse the input file as Atom Feed XML.  This enables you to retrieve links from existing sitemap files on your local disk.
+  Read and parse the input file as Atom Feed XML.  This enables you to retrieve links from existing Atom Feed files on your local disk.
   You will need `--base` to handle relative links correctly.
 
 ### `--force-rss`
 
-  Read and parse the input file as RSS Feed XML.  This enables you to retrieve links from existing sitemap files on your local disk.
+  Read and parse the input file as RSS Feed XML.  This enables you to retrieve links from existing RSS Feed files on your local disk.
   You will need `--base` to handle relative links correctly.
 
 ### `--force-metalink`
@@ -508,7 +508,10 @@ Go to background immediately after startup. If no output file is specified via t
 
   Type `bar` draws an ASCII progress bar graphics (a.k.a "thermometer" display) indicating the status of retrieval.
 
-  If the output is a TTY, `bar` is the default. Else, the progress bar will be switched off, except when using `--force-progress`.
+  The default is `bar`.
+
+  The progress bar is disabled when output is redirected to a logfile (`-o`). Use `--force-progress` to force
+  the progress bar even with a logfile.
 
   The type 'dot' is currently not supported, but won't trigger an error to not break wget command lines.
 
@@ -891,7 +894,7 @@ Go to background immediately after startup. If no output file is specified via t
 
 ### `--xattr`
 
-  Saves documents metadata as "user POSIX Extended Attributes" (default: on). This feature only works if the file system
+  Saves documents metadata as "user POSIX Extended Attributes" (default: off). This feature only works if the file system
   supports it. More info on https://freedesktop.org/wiki/CommonExtendedAttributes.
 
   Wget2 currently sets
@@ -1464,7 +1467,7 @@ Go to background immediately after startup. If no output file is specified via t
 ### `--hsts-file=file`
 
   By default, Wget2 stores its HSTS data in `$XDG_DATA_HOME/wget/.wget-hsts` or, if XDG_DATA_HOME is not set, in
-  `~/.local/wget/.wget-hsts`. You can use `--hsts-file` to override this.
+  `~/.local/share/wget/.wget-hsts`. You can use `--hsts-file` to override this.
 
   Wget2 will use the supplied file as the HSTS database. Such file must conform to the correct HSTS database format
   used by Wget. If Wget2 cannot parse the provided file, the behaviour is unspecified.
@@ -1535,7 +1538,7 @@ Go to background immediately after startup. If no output file is specified via t
 ### `--hpkp-file=file`
 
   By default, Wget2 stores its HPKP data in `$XDG_DATA_HOME/wget/.wget-hpkp` or, if XDG_DATA_HOME is not set, in
-  `~/.local/wget/.wget-hpkp`. You can use `--hpkp-file` to override this.
+  `~/.local/share/wget/.wget-hpkp`. You can use `--hpkp-file` to override this.
 
   Wget2 will use the supplied file as the HPKP database. Such file must conform to the correct HPKP database format
   used by Wget. If Wget2 cannot parse the provided file, the behaviour is unspecified.
@@ -1554,7 +1557,7 @@ Go to background immediately after startup. If no output file is specified via t
 ### `--tls-session-file=file`
 
   By default, Wget2 stores its TLS Session data in `$XDG_DATA_HOME/wget/.wget-session` or, if XDG_DATA_HOME is not set, in
-  `~/.local/wget/.wget-session`. You can use `--tls-session-file` to override this.
+  `~/.local/share/wget/.wget-session`. You can use `--tls-session-file` to override this.
 
   Wget2 will use the supplied file as the TLS Session database. Such file must conform to the correct TLS Session database format
   used by Wget. If Wget2 cannot parse the provided file, the behaviour is unspecified.
@@ -1597,7 +1600,7 @@ Go to background immediately after startup. If no output file is specified via t
 ### `--ocsp-file=file`
 
   By default, Wget2 stores its TLS Session data in `$XDG_DATA_HOME/wget/.wget-ocsp` or, if XDG_DATA_HOME is not set, in
-  `~/.local/wget/.wget-ocsp`. You can use `--ocsp-file` to override this.
+  `~/.local/share/wget/.wget-ocsp`. You can use `--ocsp-file` to override this.
 
   Wget2 will use the supplied file as the OCSP database. Such file must conform to the correct OCSP database format
   used by Wget. If Wget2 cannot parse the provided file, the behaviour is unspecified.

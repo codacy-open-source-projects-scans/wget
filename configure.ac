@@ -22,7 +22,7 @@ m4_pattern_allow([AX_CHECK_GNU_MAKE_HEADLINE])
 m4_pattern_allow([_AX_CODE_COVERAGE_GCOV_PROG_WITH])
 
 AC_PREREQ([2.71])
-AC_INIT([wget2],[2.2.1],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
+AC_INIT([wget2],[2.3.0],[bug-wget@gnu.org],[wget2],[https://savannah.gnu.org/projects/wget])
 
 AC_CONFIG_MACRO_DIRS([m4])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -80,8 +80,8 @@ LT_INIT([dlopen])
 # 4. If any interfaces have been added, removed, or changed since the last update, increment current, and set revision to 0.
 # 5. If any interfaces have been added since the last public release, then increment age.
 # 6. If any existing interfaces have been removed or changed since the last public release, then set age to 0.
-AC_SUBST([LIBWGET_SO_VERSION], [4:0:0])
-AC_SUBST([LIBWGET_VERSION], [2.2.1])
+AC_SUBST([LIBWGET_SO_VERSION], [5:0:0])
+AC_SUBST([LIBWGET_VERSION], [2.3.0])
 
 #
 # Generate version defines for include file
@@ -193,6 +193,7 @@ AS_IF([test -n "$WARN_CFLAGS"], [
     WARN_CFLAGS="$WARN_CFLAGS -Wno-covered-switch-default -Wno-unused-macros"
     WARN_CFLAGS="$WARN_CFLAGS -Wno-missing-field-initializers"
     WARN_CFLAGS="$WARN_CFLAGS -Wno-nullability-extension -Wno-nullability-completeness"
+    WARN_CFLAGS="$WARN_CFLAGS -Wno-pre-c23-compat"
 
     CLANG_VERSION=$($CC -dumpversion | cut -f1 -d.)
     AS_IF([test $CLANG_VERSION -ge 11], [
@@ -213,6 +214,11 @@ AS_IF([test -n "$WARN_CFLAGS"], [
 
     AS_IF([test $CLANG_VERSION -ge 16], [
       WARN_CFLAGS="$WARN_CFLAGS -Wno-unsafe-buffer-usage -Wno-cast-function-type-strict"
+    ])
+
+    AS_IF([test $CLANG_VERSION -ge 21], [
+      WARN_CFLAGS="$WARN_CFLAGS -Wno-global-constructors -Wno-c++-keyword"
+      WARN_CFLAGS="$WARN_CFLAGS -Wno-implicit-int-enum-cast -Wno-implicit-void-ptr-cast"
     ])
 
     # remove all flags from WARN_FLAGS that are already in CFLAGS
@@ -1024,15 +1030,18 @@ AC_SUBST([TEST_CFLAGS])
 AC_SUBST([TEST_LIBS])
 AC_SUBST([ALL_LIBS], $LIBS)
 
+AC_PATH_PROG([PYTHON3], [python3])
+AM_CONDITIONAL([HAVE_PYTHON3], [test -n "$PYTHON3"])
+
 # Combined gnulib libraries, shared across libwget, src, tests, unit-tests
-AC_SUBST([GNULIB_LIBS], \
-  ${CLOCK_TIME_LIB} ${GETADDRINFO_LIB} ${GETHOSTNAME_LIB} ${GETLOGIN_LIB} \
-  ${GETRANDOM_LIB} ${HARD_LOCALE_LIB} ${HOSTENT_LIB} ${INET_NTOP_LIB} \
-  ${INET_PTON_LIB} ${LIBMULTITHREAD} ${LIBSOCKET} ${LIBTHREAD} \
-  ${LIB_CRYPTO} ${LTLIBC32CONV} ${LTLIBICONV} ${LTLIBINTL} \
-  ${LTLIBUNISTRING} ${MBRTOWC_LIB} ${NANOSLEEP_LIB} ${POLL_LIB} \
-  ${POSIX_SPAWN_LIB} ${PTHREAD_SIGMASK_LIB} ${SELECT_LIB} \
-  ${SERVENT_LIB} ${SETLOCALE_LIB} ${SETLOCALE_NULL_LIB} ${INTL_MACOSX_LIBS})
+AC_SUBST([GNULIB_LIBS], [\
+"${CLOCK_TIME_LIB} ${GETADDRINFO_LIB} ${GETHOSTNAME_LIB} ${GETLOGIN_LIB}"\
+"${GETRANDOM_LIB} ${HARD_LOCALE_LIB} ${HOSTENT_LIB} ${INET_NTOP_LIB}"\
+"${INET_PTON_LIB} ${LIBMULTITHREAD} ${LIBSOCKET} ${LIBTHREAD}"\
+"${LIB_CRYPTO} ${LTLIBC32CONV} ${LTLIBICONV} ${LTLIBINTL}"\
+"${LTLIBUNISTRING} ${MBRTOWC_LIB} ${NANOSLEEP_LIB} ${POLL_LIB}"\
+"${POSIX_SPAWN_LIB} ${PTHREAD_SIGMASK_LIB} ${SELECT_LIB}"\
+"${SERVENT_LIB} ${SETLOCALE_LIB} ${SETLOCALE_NULL_LIB} ${INTL_MACOSX_LIBS}"])
 
 # Checks for header files.
 AC_CHECK_HEADERS([\
@@ -1042,7 +1051,7 @@ AC_CHECK_HEADERS([\
 AC_FUNC_FORK
 AC_FUNC_MMAP
 AC_CHECK_FUNCS([\
- strlcpy getuid fmemopen])
+ strlcpy getuid fmemopen pathconf])
 
 AC_CONFIG_FILES([Makefile
                  lib/Makefile

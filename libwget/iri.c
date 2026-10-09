@@ -437,6 +437,21 @@ void wget_iri_free(wget_iri **iri)
  */
 wget_iri *wget_iri_parse(const char *url, const char *encoding)
 {
+	return wget_iri_parse_ex(url, encoding, 0);
+}
+
+/**
+ * \param[in] url A URL/IRI
+ * \param[in] encoding Original encoding of \p url
+ * \return A libwget IRI (`wget_iri`)
+ *
+ * The host, path, query and fragment parts will be converted to UTF-8 from
+ * the encoding given in the parameter \p encoding. GNU libiconv is used
+ * to perform the conversion, so this value should be the name of a valid character set
+ * supported by that library, such as "utf-8" or "iso-8859-1".
+ */
+wget_iri *wget_iri_parse_ex(const char *url, const char *encoding, int flags)
+{
 	wget_iri *iri;
 	char *p, *s, *authority, c;
 	size_t slen, extra;
@@ -502,6 +517,7 @@ wget_iri *wget_iri_parse(const char *url, const char *encoding)
 	if (!iri)
 		return NULL;
 
+	iri->keep_path_as_is = (flags&WGET_IRI_KEEP_AS_IS) != 0;
 	iri->msize = slen + extra + 1;
 
 	if (have_scheme) {
@@ -511,7 +527,9 @@ wget_iri *wget_iri_parse(const char *url, const char *encoding)
 		*s++ = 0;
 
 		// p points to scheme
-		wget_iri_unescape_inline(p); // percent unescape
+		if (!iri->keep_path_as_is)
+			wget_iri_unescape_inline(p); // percent unescape
+
 		wget_strtolower(p); // convert to lowercase
 
 		bool found = false; // assume the scheme is unsupported
@@ -568,7 +586,8 @@ wget_iri *wget_iri_parse(const char *url, const char *encoding)
 			s++;
 		c = *s;
 		if (c) *s++ = 0;
-		wget_iri_unescape_inline((char *)iri->path);
+		if (!iri->keep_path_as_is)
+			wget_iri_unescape_inline((char *)iri->path);
 		normalize_path((char *)iri->path);
 	}
 
@@ -981,7 +1000,7 @@ const char *wget_iri_relative_to_abs(const wget_iri *base, const char *val, size
  *
  * If \p base is NULL, then the parameter \p url must itself be an absolute URI.
  */
-wget_iri *wget_iri_parse_base(const wget_iri *base, const char *url, const char *encoding)
+wget_iri *wget_iri_parse_base(const wget_iri *base, const char *url, const char *encoding, int flags)
 {
 	wget_iri *iri;
 
@@ -990,11 +1009,11 @@ wget_iri *wget_iri_parse_base(const wget_iri *base, const char *url, const char 
 		char sbuf[256];
 
 		wget_buffer_init(&buf, sbuf, sizeof(sbuf));
-		iri = wget_iri_parse(wget_iri_relative_to_abs(base, url, (size_t) -1, &buf), encoding);
+		iri = wget_iri_parse_ex(wget_iri_relative_to_abs(base, url, (size_t) -1, &buf), encoding, flags);
 		wget_buffer_deinit(&buf);
 	} else {
 		// no base: just check URL for being an absolute URI
-		iri = wget_iri_parse(wget_iri_relative_to_abs(NULL, url, (size_t) -1, NULL), encoding);
+		iri = wget_iri_parse_ex(wget_iri_relative_to_abs(NULL, url, (size_t) -1, NULL), encoding, flags);
 	}
 
 	return iri;
@@ -1192,8 +1211,12 @@ const char *wget_iri_get_escaped_host(const wget_iri *iri, wget_buffer *buf)
  */
 const char *wget_iri_get_escaped_resource(const wget_iri *iri, wget_buffer *buf)
 {
-	if (iri->path)
-		wget_iri_escape_path(iri->path, buf);
+	if (iri->path) {
+		if (!iri->keep_path_as_is)
+			wget_iri_escape_path(iri->path, buf);
+		else
+			wget_buffer_strcat(buf, iri->path);
+	}
 
 	// Do not actually escape the query field. This part of the URL *MAY*
 	// contain reserved characters which should be passed on as-is and without
@@ -1343,10 +1366,10 @@ char *wget_iri_get_query_as_filename(const wget_iri *iri, wget_buffer *buf, cons
 char *wget_iri_get_basename(const wget_iri *iri, wget_buffer *buf, const char *encoding, int flags)
 {
 	if (iri->path) {
-		char *fname;
+		const char *fname;
 
 		if (wget_strcasecmp_ascii(encoding, "utf-8")) {
-			char *p;
+			const char *p;
 
 			if ((p = strrchr(iri->path, '/'))) {
 				if (!(fname = wget_utf8_to_str(p + 1, encoding)))

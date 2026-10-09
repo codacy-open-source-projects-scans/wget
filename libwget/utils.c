@@ -486,7 +486,21 @@ char *wget_human_readable(char *buf, size_t bufsize, uint64_t n)
  * to the width and height of the active terminal in number of columns. If
  * either of the parameter is NULL, its value will not be set by the function.
  */
-#ifdef HAVE_IOCTL
+#ifdef __OS2__
+int wget_get_screen_size(int *width, int *height)
+{
+	int wsz[2];
+
+	_scrsize (wsz);
+
+	if (width)
+		*width = wsz[0];
+	if (height)
+		*height = wsz[1];
+
+	return 0;
+}
+#elif defined HAVE_IOCTL
 int wget_get_screen_size(int *width, int *height)
 {
 	struct winsize wsz;
@@ -528,5 +542,114 @@ int wget_get_screen_size(WGET_GCC_UNUSED int *width, WGET_GCC_UNUSED int *height
 	return -1;
 }
 #endif
+
+/**@}*/
+
+/**
+ * \param[in] path Input path to sanitize
+ * \return Newly allocated sanitized path, or NULL on error
+ *
+ * Sanitizes the given file path by resolving ".", "..", and multiple slashes.
+ *
+ * Examples:
+ *   "/root/foo/../bar/.//x.txt" -> "/root/bar/x.txt"
+ *   "foo/../bar" -> "bar"
+ *   "/foo/./bar" -> "/foo/bar"
+ *   "/foo//bar" -> "/foo/bar"
+ *   "foo/bar/.." -> "foo"
+ *   ".." -> ".." (preserved, cannot resolve past root)
+ *   "/../foo" -> "/foo" (stays at root)
+ *   "" -> "." (empty path becomes current directory)
+ *
+ * The returned string must be freed with wget_free().
+ */
+char *
+wget_path_sanitize(const char *path)
+{
+	size_t path_len;
+	char *result, *dst;
+	const char *src, *end;
+	bool is_absolute;
+
+	if (!path)
+		return NULL;
+
+	path_len = strlen(path);
+	if (path_len == 0)
+		return wget_strdup(".");
+
+	result = wget_malloc(path_len + 1);
+	if (!result)
+		return NULL;
+
+	dst = result;
+	src = path;
+	end = path + path_len;
+	is_absolute = (*src == '/');
+
+	if (is_absolute)
+		*dst++ = *src++;
+
+	while (src < end) {
+		while (src < end && *src == '/')
+			src++;
+
+		if (src >= end)
+			break;
+
+		if (src[0] == '.') {
+			if (src + 1 == end || src[1] == '/') {
+				// "." - current directory, skip it
+				src++;
+				continue;
+			}
+
+			if (src[1] == '.' && (src + 2 == end || src[2] == '/')) {
+				// ".."
+				src += 2;
+
+				// go back one directory if possible
+				if (dst > result) {
+					if (is_absolute && dst == result + 1) {
+						// at root directory, cannot go up
+					} else {
+						// move back to previous slash
+						dst--;
+						while (dst > result && dst[-1] != '/')
+							dst--;
+					}
+				} else if (!is_absolute) {
+					// keep ".." if we can't go up
+					*dst++ = '.';
+					*dst++ = '.';
+					if (src < end && *src == '/')
+						*dst++ = *src++;
+				}
+				continue;
+			}
+		}
+
+		// copy path component
+		if (dst > result && dst[-1] != '/')
+			*dst++ = '/';
+
+		while (src < end && *src != '/')
+			*dst++ = *src++;
+	}
+
+	// remove trailing slash except for root
+	if (dst > result + 1 && dst[-1] == '/')
+		dst--;
+
+	*dst = '\0';
+
+	// edge case
+	if (dst == result) {
+		xfree(result);
+		return wget_strdup(".");
+	}
+
+	return result;
+}
 
 /**@}*/

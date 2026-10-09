@@ -78,15 +78,25 @@ static const char attrs[][12] = {
 	"background",
 	"code", "codebase", "cite", "classid",
 	"data",
+	"data-src", "data-srcset",
 	"formaction",
 	"href",
 	"icon",
 	"lowsrc", "longdesc",
 	"manifest",
 	"profile", "poster",
-	"src", "srcset",
+	"src", "srcdoc", "srcset",
 	"usemap"
 };
+
+// Destructor for wget_html_parsed_url: frees url->url.p before freeing the struct
+static void html_free_url(void *elem)
+{
+	wget_html_parsed_url *url = elem;
+	if (url->url_heap_allocated && url->url.p)
+		wget_free((char *) url->url.p);
+	xfree(url);
+}
 
 static void css_parse_uri(void *context, const char *url WGET_GCC_UNUSED, size_t len, size_t pos)
 {
@@ -98,6 +108,7 @@ static void css_parse_uri(void *context, const char *url WGET_GCC_UNUSED, size_t
 		return;
 
 	parsed_url->link_inline = 1;
+	parsed_url->url_heap_allocated = 0;
 	wget_strscpy(parsed_url->attr, ctx->css_attr, sizeof(parsed_url->attr));
 	wget_strscpy(parsed_url->tag, ctx->css_dir, sizeof(parsed_url->tag));
 	parsed_url->url.p = (const char *) (ctx->html + ctx->css_start_offset + pos);
@@ -142,7 +153,7 @@ static void html_get_url(void *context, int flags, const char *tag, const char *
 	if ((flags & XML_FLG_ATTRIBUTE) && val) {
 		wget_html_parsed_result *res = &ctx->result;
 
-//		debug_printf("%02X %s %s '%.*s' %zu %zu\n", (unsigned) flags, tag, attr, (int) len, val, len, pos);
+		// debug_printf("%02X %s %s '%.*s' %zu %zu\n", (unsigned) flags, tag, attr, (int) len, val, len, pos);
 
 		if ((*tag|0x20) == 'm' && !wget_strcasecmp_ascii(tag, "meta")) {
 			if (!ctx->found_robots) {
@@ -306,9 +317,37 @@ static void html_get_url(void *context, int flags, const char *tag, const char *
 			if (!res->uris)
 				res->uris = wget_vector_create(32, NULL);
 
-			wget_html_parsed_url url;
+			wget_html_parsed_url url = { NULL };
 
-			if (!wget_strcasecmp_ascii(attr, "srcset")) {
+			// handle <iframe srcdoc="..."> - parse srcdoc content as HTML
+			if ((*tag|0x20) == 'i' && !wget_strcasecmp_ascii(tag, "iframe") && !wget_strcasecmp_ascii(attr, "srcdoc")) {
+				// decode XML entities in srcdoc content
+				char *srcdoc = wget_strmemdup(val, len);
+				if (srcdoc) {
+					wget_xml_decode_entities_inline(srcdoc); // do we need this?
+					wget_vector_set_destructor(res->uris, html_free_url);
+					// TODO: limit recursion depth
+					// TODO: wget_html_get_urls_inline() could also take pointer+len
+					wget_html_parsed_result *srcdoc_res = wget_html_get_urls_inline(srcdoc, ctx->additional_tags, ctx->ignore_tags);
+					if (srcdoc_res && srcdoc_res->uris) {
+						for (int it = 0; it < wget_vector_size(srcdoc_res->uris); it++) {
+							wget_html_parsed_url *u = wget_vector_get(srcdoc_res->uris, it);
+							u->url.p = wget_memdup(u->url.p, u->url.len);
+							u->url_heap_allocated = true;
+							wget_vector_add(res->uris, u);
+						}
+						wget_vector_clear_nofree(srcdoc_res->uris);
+					}
+					wget_html_free_urls_inline(&srcdoc_res);
+				}
+				xfree(srcdoc);
+
+				// set up destructor for uris that frees url->url.p before freeing url structs
+				wget_vector_set_destructor(res->uris, html_free_url);
+				return;
+			}
+
+			if (!wget_strcasecmp_ascii(attr, "srcset") || !wget_strcasecmp_ascii(attr, "data-srcset")) {
 				// value is a list of URLs, see https://html.spec.whatwg.org/multipage/embedded-content.html#attr-img-srcset
 				// See also https://html.spec.whatwg.org/multipage/images.html#srcset-attribute
 				while (len) {

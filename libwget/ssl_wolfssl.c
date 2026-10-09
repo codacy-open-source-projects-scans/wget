@@ -602,14 +602,13 @@ void wget_ssl_init(void)
 		debug_printf("WolfSSL init\n");
 		wolfSSL_Init();
 
-		if (!wget_strcasecmp_ascii(config.secure_protocol, "SSLv2")) {
+#ifndef NO_OLD_TLS
 #ifdef HAVE_SSLV2_CLIENT_METHOD
+		if (!wget_strcasecmp_ascii(config.secure_protocol, "SSLv2")) {
 			method = SSLv2_client_method();
-#else
-			method = wolfSSLv23_client_method();
-			min_version = WOLFSSL_SSLV3; // SSLv2 is no longer supported, use SSLv3 as minimum
-#endif
-		} else if (!wget_strcasecmp_ascii(config.secure_protocol, "SSLv3")) {
+		} else
+#endif // HAVE_SSLV2_CLIENT_METHOD
+			if (!wget_strcasecmp_ascii(config.secure_protocol, "SSLv3")) {
 			method = wolfSSLv23_client_method();
 			min_version = WOLFSSL_SSLV3;
 		} else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1")) {
@@ -618,7 +617,9 @@ void wget_ssl_init(void)
 		} else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_1")) {
 			method = wolfSSLv23_client_method();
 			min_version = WOLFSSL_TLSV1_1;
-		} else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_2")) {
+		} else
+#endif // !NO_OLD_TLS
+			if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_2")) {
 			method = wolfSSLv23_client_method();
 			min_version = WOLFSSL_TLSV1_2;
 		} else if (!wget_strcasecmp_ascii(config.secure_protocol, "TLSv1_3")) {
@@ -815,14 +816,18 @@ static int do_handshake(WOLFSSL *session, int sockfd, int timeout)
 			rc = wget_ready_2_read(sockfd, timeout);
 		} else {
 			// WOLFSSL error are negative
-			if ((rc <= WOLFSSL_FIRST_E && rc >= WOLFSSL_LAST_E)
+			if (rc == SOCKET_ERROR_E) {
+				ret = WGET_E_CONNECT;
+			}
+			else if ((rc <= WOLFSSL_FIRST_E && rc >= WOLFSSL_LAST_E)
 				|| (rc <= WC_SPAN1_FIRST_E && rc >= WC_SPAN1_LAST_E)
 				|| (rc <= WC_SPAN2_FIRST_E && rc >= WC_SPAN2_LAST_E))
 			{
 				// there are some error codes that could be mapped to WGET_E_CONNECT, though
 				ret = WGET_E_CERTIFICATE;
-			} else
+			} else {
 				ret = WGET_E_CONNECT;
+			}
 
 			break;
 		}
@@ -1013,8 +1018,10 @@ int wget_ssl_open(wget_tcp *tcp)
 	if (peer) {
 		ShowX509(peer, "Peer's cert info");
 		wolfSSL_FreeX509(peer);
-	} else
+	} else {
 		debug_printf("Peer has no cert!\n");
+		ret = WGET_E_CERTIFICATE;
+	}
 
 	ShowX509(wolfSSL_get_certificate(session), "our cert info:");
 	debug_printf("Peer verify result = %ld\n", wolfSSL_get_verify_result(session));

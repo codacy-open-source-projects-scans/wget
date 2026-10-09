@@ -29,6 +29,7 @@
 
 #include <config.h>
 
+#include <xstrtol.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <errno.h>
+#include <inttypes.h>
 #ifdef WITH_LIBPSL
 #  include <libpsl.h>
 #endif
@@ -235,7 +237,7 @@ char *wget_cookie_create_request_header(wget_cookie_db *cookie_db, const wget_ir
 		}
 
 		if (cookie->expires && cookie->expires <= now) {
-			debug_printf("cookie expired (%lld <= %lld)\n", (long long)cookie->expires, (long long)now);
+			debug_printf("cookie expired (%" PRIi64 " <= %" PRIi64 ")\n", cookie->expires, now);
 			continue;
 		}
 
@@ -393,7 +395,11 @@ static int cookie_db_load(wget_cookie_db *cookie_db, FILE *fp)
 
 		// parse expires
 		for (p = *linep ? ++linep : linep; *linep && *linep != '\t';) linep++;
-		cookie.expires = (int64_t) atoll(p);
+		long long expires;
+		if (xstrtoll(p, NULL, 10, &expires, NULL) != LONGINT_OK)
+			expires = 0;
+		cookie.expires = (int64_t) expires;
+
 		if (cookie.expires && cookie.expires <= now) {
 			// drop expired cookie
 			wget_cookie_deinit(&cookie);
@@ -472,13 +478,13 @@ static int cookie_db_save(wget_cookie_db *cookie_db, FILE *fp)
 			} else if (!cookie_db->keep_session_cookies)
 				continue;
 
-			wget_fprintf(fp, "%s%s%s\t%s\t%s\t%s\t%lld\t%s\t%s\n",
+			wget_fprintf(fp, "%s%s%s\t%s\t%s\t%s\t%" PRIi64 "\t%s\t%s\n",
 				cookie->http_only ? "#HttpOnly_" : "",
 				cookie->domain_dot ? "." : "", // compatibility, irrelevant since RFC 6562
 				cookie->domain,
 				cookie->host_only ? "FALSE" : "TRUE",
 				cookie->path, cookie->secure_only ? "TRUE" : "FALSE",
-				(long long)cookie->expires,
+				cookie->expires,
 				cookie->name, cookie->value);
 
 			if (ferror(fp))

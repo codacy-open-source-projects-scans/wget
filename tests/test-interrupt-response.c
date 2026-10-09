@@ -28,6 +28,7 @@
 
 #define DUMMYDATA_SIZE 1024
 #define INTERRUPT_AFTER_NBYTES 512
+#define TIMESTAMP 1000000000
 
 int main(void)
 {
@@ -74,7 +75,7 @@ int main(void)
 		},
 		{	.name = "/file4.bin",
 			.code = "200 Dontcare",
-			.modified = 1000000000,
+			.modified = TIMESTAMP,
 			.body = data1,
 			.headers = {
 				"Content-Type: application/octet-stream",
@@ -103,7 +104,7 @@ int main(void)
 
 	// Test interrupt connection immediately
 	wget_test(
-		WGET_TEST_OPTIONS, "--tries=2",
+		WGET_TEST_OPTIONS, "--tries=2 --waitretry=1",
 		WGET_TEST_REQUEST_URL, "file2.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 7,
 		WGET_TEST_EXPECTED_FILES, &(wget_test_file_t []) {
@@ -114,7 +115,7 @@ int main(void)
 	// test interrupting connection during headers transfer
 	wget_test(
 //		WGET_TEST_EXECUTABLE, "/usr/bin/wget",
-		WGET_TEST_OPTIONS, "--tries=2",
+		WGET_TEST_OPTIONS, "--tries=2 --waitretry=1",
 		WGET_TEST_REQUEST_URL, "file3.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 7,
 		WGET_TEST_EXPECTED_FILES, &(wget_test_file_t []) {
@@ -130,7 +131,7 @@ int main(void)
 	// Wget1.x fails here
 	wget_test(
 //		WGET_TEST_EXECUTABLE, "/usr/bin/wget -d",
-		WGET_TEST_OPTIONS, "-c --tries=2",
+		WGET_TEST_OPTIONS, "-c --tries=2 --waitretry=1",
 		WGET_TEST_REQUEST_URL, "file3.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 0,
 		WGET_TEST_EXISTING_FILES, &(wget_test_file_t []) {
@@ -146,11 +147,11 @@ int main(void)
 	// Wget1.x leaves the partial file with a current timestamp (ignoring Last-Modified header)
 	wget_test(
 //		WGET_TEST_EXECUTABLE, "/usr/bin/wget",
-		WGET_TEST_OPTIONS, "-N --tries=2",
+		WGET_TEST_OPTIONS, "-N --tries=2 --waitretry=1",
 		WGET_TEST_REQUEST_URL, "file4.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 7,
 		WGET_TEST_EXPECTED_FILES, &(wget_test_file_t []) {
-			{ "file4.bin", data1_interrupted, 1000000000 - 1 },
+			{ "file4.bin", data1_interrupted, TIMESTAMP - 1 },
 			{	NULL } },
 		0);
 
@@ -159,32 +160,36 @@ int main(void)
 	urls[3].body = data2;
 
 	// Testing continue interrupted response while timestamping is active
-	// Expect that file will be skipped due to "304 not modified" from server
+	// With resume (-c), If-Modified-Since is NOT sent (to avoid 304 responses).
+	// Instead, only the Range header is sent, so the server returns 206 Partial Content.
+	// The partial body is appended to the existing truncated file.
 	wget_test(
 //		WGET_TEST_EXECUTABLE, "/usr/bin/wget",
 		WGET_TEST_OPTIONS, "-c -N",
 		WGET_TEST_REQUEST_URL, "file4.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 0,
 		WGET_TEST_EXISTING_FILES, &(wget_test_file_t []) {
-			{ "file4.bin", data1_interrupted, 1000000000 },
+			{ "file4.bin", data1_interrupted, TIMESTAMP },
 			{	NULL } },
 		WGET_TEST_EXPECTED_FILES, &(wget_test_file_t []) {
-			{ "file4.bin", data1_interrupted, 1000000000 },
+			{ "file4.bin", data12_merged, TIMESTAMP },
 			{	NULL } },
 		0);
 
-	// Testing continue interrupted response while timestamping is active
-	// Expect that file will be appended/merged due to "206 Partial Content" from server
+	// Testing resume without timestamp (file timestamp differs by 1s)
+	// With resume (-c), If-Modified-Since is NOT sent (to avoid 304 responses).
+	// Instead, only the Range header is sent, so the server returns 206 Partial Content.
+	// The partial body is appended to the existing truncated file.
 	wget_test(
 //		WGET_TEST_EXECUTABLE, "/usr/bin/wget",
 		WGET_TEST_OPTIONS, "-c -N",
 		WGET_TEST_REQUEST_URL, "file4.bin",
 		WGET_TEST_EXPECTED_ERROR_CODE, 0,
 		WGET_TEST_EXISTING_FILES, &(wget_test_file_t []) {
-			{ "file4.bin", data1_interrupted, 1000000000 - 1 }, // 1s older than on server
+			{ "file4.bin", data1_interrupted, TIMESTAMP - 1 }, // 1s older than on server
 			{	NULL } },
 		WGET_TEST_EXPECTED_FILES, &(wget_test_file_t []) {
-			{ "file4.bin", data12_merged, 1000000000 },
+			{ "file4.bin", data12_merged, TIMESTAMP },
 			{	NULL } },
 		0);
 
